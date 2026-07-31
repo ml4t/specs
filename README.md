@@ -1,10 +1,14 @@
 # ml4t-specs
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12-3.14](https://img.shields.io/badge/python-3.12--3.14-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/ml4t-specs)](https://pypi.org/project/ml4t-specs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Shared schema and artifact contracts for the ML4T library ecosystem.
+
+The stable support matrix is CPython 3.12 through 3.14 on Linux, macOS, and Windows.
+CPython 3.15 prereleases are tested on all three operating systems but are not advertised as
+stable until Python 3.15 is final.
 
 ## What This Package Does
 

@@ -28,7 +28,7 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Science/Research",
@@ -37,6 +37,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Office/Business :: Financial :: Investment",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Typing :: Typed",
@@ -50,8 +51,11 @@ Changelog = "https://github.com/ml4t/specs/releases"
 
 [dependency-groups]
 dev = [
+    "pip-audit>=2.10.0",
     "pytest>=8.0.0",
+    "pytest-cov>=6.0",
     "ruff>=0.8.0",
+    "twine>=6.2.0",
     "ty",
 ]
 
@@ -60,6 +64,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = [
+    "--cov=ml4t.specs",
+    "--cov-branch",
+    "--cov-fail-under=100",
+]
 
 [tool.ruff]
 line-length = 100
