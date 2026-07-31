@@ -85,6 +85,8 @@ class FeedSpec:
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> FeedSpec:
         """Create a feed contract from a generic mapping."""
+        if not isinstance(mapping, Mapping):
+            raise TypeError("feed spec source must be a mapping")
 
         def pick(*names: str) -> Any:
             for name in names:
@@ -106,6 +108,8 @@ class FeedSpec:
 
         metadata = getattr(value, "metadata", None)
         if metadata is not None:
+            if metadata is value:
+                raise ValueError("feed spec metadata cannot refer to itself")
             return cls.from_object(metadata)
 
         def pick(*names: str) -> Any:
@@ -116,6 +120,8 @@ class FeedSpec:
 
         projected = cls._extract_market_data_like_fields(value)
         projected.update(cls._extract_alias_data(pick))
+        if not projected:
+            raise TypeError("feed spec source has no recognized fields")
         return cls(**projected)
 
     @classmethod
@@ -245,19 +251,37 @@ class MarketDataSchema:
     bid_size_col: str | None = None
     ask_size_col: str | None = None
 
+    def __post_init__(self) -> None:
+        required_columns = (
+            "timestamp_col",
+            "entity_col",
+            "price_col",
+            "open_col",
+            "high_col",
+            "low_col",
+            "close_col",
+            "volume_col",
+        )
+        for field_name in required_columns:
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be a non-empty string")
+
     @classmethod
-    def from_mapping(cls, mapping: dict[str, Any] | None) -> MarketDataSchema:
+    def from_mapping(cls, mapping: Mapping[str, Any] | None) -> MarketDataSchema:
         if mapping is None:
             return cls()
+        if not isinstance(mapping, Mapping):
+            raise TypeError("schema must be a mapping or None")
         return cls(
-            timestamp_col=str(mapping.get("timestamp_col", "timestamp")),
-            entity_col=str(mapping.get("entity_col", "asset")),
-            price_col=str(mapping.get("price_col", "close")),
-            open_col=str(mapping.get("open_col", "open")),
-            high_col=str(mapping.get("high_col", "high")),
-            low_col=str(mapping.get("low_col", "low")),
-            close_col=str(mapping.get("close_col", "close")),
-            volume_col=str(mapping.get("volume_col", "volume")),
+            timestamp_col=mapping.get("timestamp_col", "timestamp"),
+            entity_col=mapping.get("entity_col", "asset"),
+            price_col=mapping.get("price_col", "close"),
+            open_col=mapping.get("open_col", "open"),
+            high_col=mapping.get("high_col", "high"),
+            low_col=mapping.get("low_col", "low"),
+            close_col=mapping.get("close_col", "close"),
+            volume_col=mapping.get("volume_col", "volume"),
             bid_col=optional_str(mapping.get("bid_col")),
             ask_col=optional_str(mapping.get("ask_col")),
             mid_col=optional_str(mapping.get("mid_col")),
@@ -284,9 +308,11 @@ class MarketDataSemantics:
         object.__setattr__(self, "timestamp_semantics", TimestampSemantics(str(semantics)))
 
     @classmethod
-    def from_mapping(cls, mapping: dict[str, Any] | None) -> MarketDataSemantics:
+    def from_mapping(cls, mapping: Mapping[str, Any] | None) -> MarketDataSemantics:
         if mapping is None:
             return cls()
+        if not isinstance(mapping, Mapping):
+            raise TypeError("semantics must be a mapping or None")
         return cls(
             data_frequency=optional_str(mapping.get("data_frequency")),
             calendar=optional_str(mapping.get("calendar")),
@@ -306,10 +332,15 @@ class MarketDataSpec(ArtifactSpec):
     semantics: MarketDataSemantics = field(default_factory=MarketDataSemantics)
 
     @classmethod
-    def from_mapping(cls, mapping: dict[str, Any]) -> MarketDataSpec:
+    def from_mapping(cls, mapping: Mapping[str, Any]) -> MarketDataSpec:
+        if not isinstance(mapping, Mapping):
+            raise TypeError("market data spec must be a mapping")
+        kind = ArtifactKind(mapping.get("kind", ArtifactKind.MARKET_DATA))
+        if kind is not ArtifactKind.MARKET_DATA:
+            raise ValueError(f"MarketDataSpec kind must be 'market_data', got {kind.value!r}")
         return cls(
-            artifact_id=str(mapping["artifact_id"]),
-            version=int(mapping.get("version", 1)),
+            artifact_id=mapping["artifact_id"],
+            version=mapping.get("version", 1),
             storage=ArtifactStorage.from_mapping(mapping.get("storage")),
             provenance=ArtifactProvenance.from_mapping(mapping.get("provenance")),
             schema=MarketDataSchema.from_mapping(mapping.get("schema")),

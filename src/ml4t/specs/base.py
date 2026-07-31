@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -26,12 +27,16 @@ class ArtifactStorage:
     partition_by: tuple[str, ...] = ()
 
     @classmethod
-    def from_mapping(cls, mapping: dict[str, Any] | None) -> ArtifactStorage:
+    def from_mapping(cls, mapping: Mapping[str, Any] | None) -> ArtifactStorage:
         if mapping is None:
             return cls()
+        if not isinstance(mapping, Mapping):
+            raise TypeError("storage must be a mapping or None")
         partition_by = mapping.get("partition_by", ())
         if isinstance(partition_by, str):
             partition_by = (partition_by,)
+        elif not isinstance(partition_by, Sequence):
+            raise TypeError("storage partition_by must be a string or sequence")
         return cls(
             path=mapping.get("path", ""),
             format=str(mapping.get("format", "parquet")),
@@ -48,12 +53,16 @@ class ArtifactProvenance:
     created_by: str | None = None
 
     @classmethod
-    def from_mapping(cls, mapping: dict[str, Any] | None) -> ArtifactProvenance:
+    def from_mapping(cls, mapping: Mapping[str, Any] | None) -> ArtifactProvenance:
         if mapping is None:
             return cls()
+        if not isinstance(mapping, Mapping):
+            raise TypeError("provenance must be a mapping or None")
         source_artifacts = mapping.get("source_artifacts", ())
         if isinstance(source_artifacts, str):
             source_artifacts = (source_artifacts,)
+        elif not isinstance(source_artifacts, Sequence):
+            raise TypeError("provenance source_artifacts must be a string or sequence")
         return cls(
             source_artifacts=tuple(str(item) for item in source_artifacts),
             content_hash=_optional_str(mapping.get("content_hash")),
@@ -70,6 +79,12 @@ class ArtifactSpec:
     version: int = 1
     storage: ArtifactStorage = field(default_factory=ArtifactStorage)
     provenance: ArtifactProvenance = field(default_factory=ArtifactProvenance)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.artifact_id, str) or not self.artifact_id.strip():
+            raise ValueError("artifact_id must be a non-empty string")
+        if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version < 1:
+            raise ValueError("version must be a positive integer")
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))

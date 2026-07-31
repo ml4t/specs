@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
+import ml4t.specs.io as spec_io
 from ml4t.specs import (
     ArtifactStorage,
     MarketDataSemantics,
@@ -55,3 +60,90 @@ def test_spec_io_json_round_trip(tmp_path) -> None:
     loaded = MarketDataSpec.from_mapping(read_spec_payload(path))
 
     assert loaded == spec
+
+
+def test_write_spec_payload_accepts_artifact_spec(tmp_path) -> None:
+    spec = MarketDataSpec(artifact_id="prices")
+
+    path = write_spec_payload(spec, tmp_path / "market_data.yaml")
+
+    assert MarketDataSpec.from_mapping(read_spec_payload(path)) == spec
+
+
+@pytest.mark.parametrize("suffix", [".txt", "", ".toml"])
+def test_spec_io_rejects_unsupported_extensions(tmp_path, suffix: str) -> None:
+    path = tmp_path / f"market_data{suffix}"
+    with pytest.raises(ValueError, match="extension"):
+        write_spec_payload({"artifact_id": "prices"}, path)
+    with pytest.raises(ValueError, match="extension"):
+        read_spec_payload(path)
+
+
+@pytest.mark.parametrize(
+    ("content", "suffix"),
+    [
+        ("- first\n- second\n", ".yaml"),
+        ("42\n", ".yaml"),
+        (json.dumps(["first", "second"]), ".json"),
+        (json.dumps(42), ".json"),
+    ],
+)
+def test_read_spec_payload_rejects_non_mapping_documents(
+    tmp_path,
+    content: str,
+    suffix: str,
+) -> None:
+    path = tmp_path / f"invalid{suffix}"
+    path.write_text(content)
+
+    with pytest.raises(ValueError, match="mapping"):
+        read_spec_payload(path)
+
+
+def test_read_spec_payload_normalizes_mapping_keys(tmp_path) -> None:
+    path = tmp_path / "numeric-key.yaml"
+    path.write_text("1: value\n")
+
+    assert read_spec_payload(path) == {"1": "value"}
+
+
+def test_write_spec_payload_does_not_replace_valid_file_on_serialization_error(tmp_path) -> None:
+    path = tmp_path / "market_data.json"
+    path.write_text('{"artifact_id": "valid"}\n')
+
+    with pytest.raises(TypeError):
+        write_spec_payload({"invalid": object()}, path)
+
+    assert read_spec_payload(path) == {"artifact_id": "valid"}
+
+
+def test_spec_io_supports_yml_and_empty_documents(tmp_path) -> None:
+    path = tmp_path / "empty.yml"
+    path.write_text("")
+    assert read_spec_payload(path) == {}
+
+    write_spec_payload({1: "value"}, path)
+    assert read_spec_payload(path) == {"1": "value"}
+
+
+def test_read_spec_payload_copies_mapping() -> None:
+    source = {1: "value"}
+    result = read_spec_payload(source)
+
+    assert result == {"1": "value"}
+    assert result is not source
+
+
+def test_write_spec_payload_handles_temporary_file_creation_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_create(*_args, **_kwargs):
+        raise OSError("no temporary file")
+
+    monkeypatch.setattr(spec_io, "NamedTemporaryFile", fail_to_create)
+    path = tmp_path / "market_data.json"
+
+    with pytest.raises(OSError, match="no temporary file"):
+        write_spec_payload({"artifact_id": "prices"}, path)
+    assert not path.exists()

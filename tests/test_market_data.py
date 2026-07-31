@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+
 from ml4t.specs import (
     ArtifactKind,
+    ArtifactProvenance,
     ArtifactStorage,
     FeedSpec,
     MarketDataSchema,
     MarketDataSemantics,
     MarketDataSpec,
     TimestampSemantics,
+    optional_str,
+    serialize_artifact_value,
 )
 
 
@@ -112,3 +121,206 @@ def test_market_data_spec_to_feed_spec() -> None:
     assert feed_spec.entity_col == "asset"
     assert feed_spec.price_col == "mid"
     assert feed_spec.calendar == "24/7"
+
+
+def test_market_data_spec_rejects_conflicting_kind() -> None:
+    with pytest.raises(ValueError, match="kind"):
+        MarketDataSpec.from_mapping({"artifact_id": "prices", "kind": "features"})
+
+
+@pytest.mark.parametrize("artifact_id", ["", "   "])
+def test_market_data_spec_rejects_empty_artifact_id(artifact_id: str) -> None:
+    with pytest.raises(ValueError, match="artifact_id"):
+        MarketDataSpec(artifact_id=artifact_id)
+
+
+@pytest.mark.parametrize("version", [True, 0, -1])
+def test_market_data_spec_rejects_invalid_version(version: int) -> None:
+    with pytest.raises(ValueError, match="version"):
+        MarketDataSpec(artifact_id="prices", version=version)
+
+
+@pytest.mark.parametrize("field", ["storage", "provenance", "schema", "semantics"])
+def test_market_data_spec_rejects_non_mapping_nested_payload(field: str) -> None:
+    with pytest.raises(TypeError, match=field):
+        MarketDataSpec.from_mapping({"artifact_id": "prices", field: []})
+
+
+def test_storage_rejects_invalid_partition_columns() -> None:
+    with pytest.raises(TypeError, match="partition_by"):
+        ArtifactStorage.from_mapping({"partition_by": 1})
+
+
+def test_artifact_helpers_normalize_storage_and_provenance() -> None:
+    storage = ArtifactStorage.from_mapping(
+        {"path": Path("bars.parquet"), "format": "parquet", "partition_by": "symbol"}
+    )
+    provenance = ArtifactProvenance.from_mapping(
+        {"source_artifacts": "raw-bars", "content_hash": 123, "created_by": ""}
+    )
+
+    assert storage.partition_by == ("symbol",)
+    assert provenance.source_artifacts == ("raw-bars",)
+    assert provenance.content_hash == "123"
+    assert provenance.created_by is None
+    assert ArtifactStorage.from_mapping(None) == ArtifactStorage()
+    assert ArtifactProvenance.from_mapping(None) == ArtifactProvenance()
+
+
+@pytest.mark.parametrize(
+    ("factory", "message"),
+    [
+        (lambda: ArtifactStorage.from_mapping(cast("Any", [])), "storage"),
+        (lambda: ArtifactProvenance.from_mapping(cast("Any", [])), "provenance"),
+        (lambda: ArtifactProvenance.from_mapping({"source_artifacts": 1}), "source_artifacts"),
+    ],
+)
+def test_artifact_helpers_reject_malformed_mappings(factory, message: str) -> None:
+    with pytest.raises(TypeError, match=message):
+        factory()
+
+
+def test_artifact_value_serialization_handles_nested_supported_values() -> None:
+    value = {
+        "kind": ArtifactKind.FEATURES,
+        "path": Path("features.parquet"),
+        "tuple": (ArtifactKind.LABELS,),
+        "list": [Path("predictions.parquet")],
+    }
+
+    assert serialize_artifact_value(value) == {
+        "kind": "features",
+        "path": "features.parquet",
+        "tuple": ["labels"],
+        "list": ["predictions.parquet"],
+    }
+    assert serialize_artifact_value(1) == 1
+    assert optional_str(None) is None
+    assert optional_str(12) == "12"
+
+
+def test_feed_spec_from_flat_aliases_and_overrides() -> None:
+    spec = FeedSpec.from_mapping(
+        {
+            "datetime_col": "date",
+            "ticker_col": "ticker",
+            "close_col": "settle",
+            "frequency": "1d",
+            "timestamp_semantics": "session_label",
+        }
+    )
+
+    assert spec.timestamp_col == "date"
+    assert spec.entity_col == "ticker"
+    assert spec.price_col == "settle"
+    assert spec.close_col == "settle"
+    assert spec.data_frequency == "1d"
+    assert spec.timestamp_semantics is TimestampSemantics.SESSION_LABEL
+    assert spec.with_overrides(price_col=None) is spec
+    assert spec.with_overrides(price_col="adjusted_close").price_col == "adjusted_close"
+
+
+def test_feed_spec_from_objects_and_defaults() -> None:
+    direct = FeedSpec(timestamp_col="ts")
+    assert FeedSpec.from_any(direct) is direct
+    assert FeedSpec.from_any(None) == FeedSpec()
+
+    nested = SimpleNamespace(
+        metadata=SimpleNamespace(
+            schema=SimpleNamespace(time_col="date", group_col="asset", price_col="price"),
+            semantics=SimpleNamespace(calendar="XNYS", frequency="1d"),
+        )
+    )
+    spec = FeedSpec.from_object(nested)
+    assert spec.timestamp_col == "date"
+    assert spec.entity_col == "asset"
+    assert spec.price_col == "price"
+    assert spec.close_col == "price"
+    assert spec.calendar == "XNYS"
+    assert spec.data_frequency == "1d"
+
+    direct_object = FeedSpec.from_object(SimpleNamespace(time_col="time", group_col="asset"))
+    assert direct_object.timestamp_col == "time"
+    assert direct_object.entity_col == "asset"
+
+    semantics_only = FeedSpec.from_object(
+        SimpleNamespace(schema=None, semantics=SimpleNamespace(calendar="24/7"))
+    )
+    assert semantics_only.calendar == "24/7"
+
+
+def test_feed_spec_resolves_explicit_and_detected_entities() -> None:
+    explicit = FeedSpec(entity_col=["ticker"])
+    assert explicit.resolve(["timestamp", "ticker"], ["symbol"]).entity_col == "ticker"
+
+    detected = FeedSpec(entity_col=None)
+    assert detected.resolve(["timestamp", "symbol"], ["asset", "symbol"]).entity_col == "symbol"
+
+
+def test_feed_spec_resolution_rejects_invalid_columns() -> None:
+    with pytest.raises(ValueError, match="timestamp_col"):
+        FeedSpec().resolve(["symbol"], ["symbol"])
+    with pytest.raises(ValueError, match="entity_col"):
+        FeedSpec(entity_col="missing").resolve(["timestamp", "symbol"], ["symbol"])
+    with pytest.raises(ValueError, match="Cannot detect"):
+        FeedSpec(entity_col=None).resolve(["timestamp"], ["symbol"])
+    with pytest.raises(ValueError, match="single entity"):
+        FeedSpec(entity_col=["symbol", "venue"]).resolve(
+            ["timestamp", "symbol", "venue"], ["symbol"]
+        )
+
+
+def test_feed_spec_empty_entity_sequence_allows_detection() -> None:
+    spec = FeedSpec(entity_col=[]).resolve(["timestamp", "symbol"], ["symbol"])
+    assert spec.entity_col == "symbol"
+
+
+def test_schema_and_semantics_mapping_defaults() -> None:
+    assert MarketDataSchema.from_mapping(None) == MarketDataSchema()
+    assert MarketDataSemantics.from_mapping(None) == MarketDataSemantics()
+    assert MarketDataSemantics(
+        timestamp_semantics=TimestampSemantics.EVENT_TIME
+    ).timestamp_semantics is (TimestampSemantics.EVENT_TIME)
+
+
+def test_market_data_spec_rejects_non_mapping_payload() -> None:
+    with pytest.raises(TypeError, match="market data spec"):
+        MarketDataSpec.from_mapping(cast("Any", []))
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"artifact_id": None}, "artifact_id"),
+        ({"artifact_id": 123}, "artifact_id"),
+        ({"artifact_id": "prices", "version": True}, "version"),
+        ({"artifact_id": "prices", "version": "1"}, "version"),
+    ],
+)
+def test_market_data_mapping_rejects_coercible_invalid_identity_fields(
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        MarketDataSpec.from_mapping(payload)
+
+
+@pytest.mark.parametrize("field", ["timestamp_col", "entity_col", "price_col", "close_col"])
+def test_market_data_schema_rejects_invalid_required_columns(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        MarketDataSchema.from_mapping({field: None})
+
+
+def test_feed_spec_rejects_malformed_sources() -> None:
+    with pytest.raises(TypeError, match="mapping"):
+        FeedSpec.from_mapping(cast("Any", []))
+    with pytest.raises(TypeError, match="recognized"):
+        FeedSpec.from_object(object())
+
+
+def test_feed_spec_rejects_self_referential_metadata() -> None:
+    source = SimpleNamespace()
+    source.metadata = source
+
+    with pytest.raises(ValueError, match="itself"):
+        FeedSpec.from_object(source)
