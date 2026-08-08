@@ -446,7 +446,7 @@ LIFECYCLE_V1 = LifecycleContract(
             LifecyclePhase.CAUSAL_INITIALIZATION,
             "on_prepare",
             _PRIOR,
-            False,
+            True,
             CallbackCardinality.EXACTLY_ONCE,
             CallbackExceptionSemantics.ABORT_BEFORE_SIDE_EFFECTS,
         ),

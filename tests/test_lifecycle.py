@@ -72,6 +72,7 @@ def test_lifecycle_v1_is_complete_versioned_and_round_trips() -> None:
 
 
 def test_opening_decisions_cannot_observe_current_close() -> None:
+    initialization = LIFECYCLE_V1.phase_spec(LifecyclePhase.CAUSAL_INITIALIZATION)
     pre_open = LIFECYCLE_V1.phase_spec(LifecyclePhase.PRE_OPEN)
     opening = LIFECYCLE_V1.phase_spec(LifecyclePhase.OPENING_AUCTION)
     close = LIFECYCLE_V1.phase_spec(LifecyclePhase.CLOSE)
@@ -81,6 +82,7 @@ def test_opening_decisions_cannot_observe_current_close() -> None:
     close.require_visible(InformationField.CURRENT_CLOSE)
     with pytest.raises(ProhibitedFieldAccessError, match="current_close.*pre_open"):
         pre_open.require_visible(InformationField.CURRENT_CLOSE)
+    assert initialization.intents_allowed
     assert pre_open.intents_allowed
     assert not LIFECYCLE_V1.phase_spec(LifecyclePhase.FILL_RECONCILIATION).intents_allowed
 
