@@ -1,0 +1,843 @@
+"""Canonical strategy intent, execution-policy, and position-rule contracts."""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
+from datetime import UTC, date, datetime
+from enum import StrEnum
+from typing import Any
+
+from .lifecycle import LIFECYCLE_V1, LifecyclePhase, LifecycleVersion, negotiate_lifecycle_version
+
+
+class TargetMeasure(StrEnum):
+    """Units used by a target intent."""
+
+    WEIGHT = "weight"
+    QUANTITY = "quantity"
+
+
+class RoundingPolicy(StrEnum):
+    """How target quantities become tradable quantities."""
+
+    NONE = "none"
+    TOWARD_ZERO = "toward_zero"
+    NEAREST = "nearest"
+
+
+class ResidualPolicy(StrEnum):
+    """How sizing residuals are handled."""
+
+    KEEP_CASH = "keep_cash"
+    LARGEST_REMAINDER = "largest_remainder"
+    REJECT = "reject"
+
+
+class IntentReason(StrEnum):
+    """Typed reason for a strategy intent."""
+
+    SIGNAL = "signal"
+    REBALANCE = "rebalance"
+    POSITION_RULE = "position_rule"
+    LIQUIDATION = "liquidation"
+    MANUAL = "manual"
+
+
+class OrderSide(StrEnum):
+    """Unsigned child-order direction."""
+
+    BUY = "buy"
+    SELL = "sell"
+
+
+class OrderType(StrEnum):
+    """Portable child-order types."""
+
+    MARKET = "market"
+    LIMIT = "limit"
+    STOP = "stop"
+    STOP_LIMIT = "stop_limit"
+    TRAILING_STOP = "trailing_stop"
+    MOC = "moc"
+
+
+class TimeInForce(StrEnum):
+    """Portable order duration policies."""
+
+    DAY = "day"
+    GTC = "gtc"
+    IOC = "ioc"
+    FOK = "fok"
+    OPG = "opg"
+    CLS = "cls"
+
+
+class SessionPolicy(StrEnum):
+    """Sessions in which an order is eligible."""
+
+    REGULAR = "regular"
+    EXTENDED = "extended"
+    ANY = "any"
+
+
+class ExecutionCapability(StrEnum):
+    """Venue or client capabilities required by a child order."""
+
+    LIMIT = "limit"
+    STOP = "stop"
+    STOP_LIMIT = "stop_limit"
+    TRAILING_STOP = "trailing_stop"
+    OPENING_AUCTION = "opening_auction"
+    CLOSE_AUCTION = "close_auction"
+    PARTIAL_FILL = "partial_fill"
+    CONTINGENT = "contingent"
+
+
+class EvaluationMode(StrEnum):
+    """Where an order or rule is evaluated."""
+
+    CLIENT = "client"
+    BROKER_NATIVE = "broker_native"
+
+
+class FillEligibility(StrEnum):
+    """When an accepted child intent can fill."""
+
+    CURRENT_PHASE = "current_phase"
+    NEXT_PHASE = "next_phase"
+    OPENING_AUCTION = "opening_auction"
+    CLOSE_AUCTION = "close_auction"
+
+
+class ExecutionBehavior(StrEnum):
+    """How one execution behavior is provided."""
+
+    DISABLED = "disabled"
+    CLIENT = "client"
+    BROKER_NATIVE = "broker_native"
+
+
+class BarPathPolicy(StrEnum):
+    """How ambiguous intrabar trigger order is resolved."""
+
+    REJECT_AMBIGUOUS = "reject_ambiguous"
+    CONSERVATIVE = "conservative"
+    OPEN_HIGH_LOW_CLOSE = "open_high_low_close"
+    OPEN_LOW_HIGH_CLOSE = "open_low_high_close"
+
+
+class PositionRuleType(StrEnum):
+    """Portable position-rule kinds."""
+
+    STOP_LOSS = "stop_loss"
+    TAKE_PROFIT = "take_profit"
+    TRAILING_STOP = "trailing_stop"
+    TIME_EXIT = "time_exit"
+    SCALED_EXIT = "scaled_exit"
+    COMPOSITE = "composite"
+
+
+class RuleComposition(StrEnum):
+    """How child position rules compose."""
+
+    ALL = "all"
+    ANY = "any"
+    FIRST_TRIGGERED = "first_triggered"
+
+
+class RuleActivation(StrEnum):
+    """Current position-rule activation state."""
+
+    INACTIVE = "inactive"
+    ACTIVE = "active"
+    TRIGGERED = "triggered"
+    COMPLETE = "complete"
+
+
+class PositionActionType(StrEnum):
+    """Typed result of position-rule evaluation."""
+
+    HOLD = "hold"
+    EXIT_FULL = "exit_full"
+    EXIT_PARTIAL = "exit_partial"
+    ADJUST_STOP = "adjust_stop"
+
+
+class ExitReason(StrEnum):
+    """Typed reason for a position exit."""
+
+    NONE = "none"
+    STOP_LOSS = "stop_loss"
+    TAKE_PROFIT = "take_profit"
+    TRAILING_STOP = "trailing_stop"
+    TIME_EXIT = "time_exit"
+    SIGNAL = "signal"
+    LIQUIDATION = "liquidation"
+
+
+def _non_empty(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _finite(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{name} must be a number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _utc(value: datetime, name: str) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() != UTC.utcoffset(value)
+    ):
+        raise ValueError(f"{name} must be timezone-aware UTC")
+    return value.astimezone(UTC)
+
+
+def _intent_phase(phase: LifecyclePhase) -> None:
+    if not LIFECYCLE_V1.phase_spec(phase).intents_allowed:
+        raise ValueError(f"phase {phase.value!r} does not allow intents")
+
+
+@dataclass(frozen=True, slots=True)
+class AssetTarget:
+    """One signed asset target in an explicit unit."""
+
+    asset: str
+    measure: TargetMeasure
+    value: float
+
+    def __post_init__(self) -> None:
+        _non_empty(self.asset, "asset")
+        _finite(self.value, "target value")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> AssetTarget:
+        return cls(value["asset"], TargetMeasure(value["measure"]), value["value"])
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalTargetIntent:
+    """Engine-independent strategy decision before child-order construction."""
+
+    intent_id: str
+    decision_time: datetime
+    information_cutoff: datetime
+    effective_session: date
+    effective_phase: LifecyclePhase
+    targets: tuple[AssetTarget, ...]
+    idempotency_key: str
+    measure: TargetMeasure
+    cash_buffer: float
+    rounding: RoundingPolicy
+    residual: ResidualPolicy
+    reason: IntentReason
+    lifecycle_version: LifecycleVersion = LifecycleVersion.V1
+    position_rule_policy_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _non_empty(self.intent_id, "intent_id")
+        _non_empty(self.idempotency_key, "idempotency_key")
+        object.__setattr__(self, "decision_time", _utc(self.decision_time, "decision_time"))
+        object.__setattr__(
+            self,
+            "information_cutoff",
+            _utc(self.information_cutoff, "information_cutoff"),
+        )
+        if self.information_cutoff > self.decision_time:
+            raise ValueError("information_cutoff must not follow decision_time")
+        if not isinstance(self.effective_session, date) or isinstance(
+            self.effective_session, datetime
+        ):
+            raise TypeError("effective_session must be a date")
+        _intent_phase(self.effective_phase)
+        if not self.targets:
+            raise ValueError("targets must not be empty")
+        assets = tuple(target.asset for target in self.targets)
+        if len(assets) != len(set(assets)):
+            raise ValueError("targets must contain each asset once")
+        if any(target.measure is not self.measure for target in self.targets):
+            raise ValueError("every target measure must match intent measure")
+        cash_buffer = _finite(self.cash_buffer, "cash_buffer")
+        if not 0 <= cash_buffer < 1:
+            raise ValueError("cash_buffer must be in [0, 1)")
+        if self.position_rule_policy_id is not None:
+            _non_empty(self.position_rule_policy_id, "position_rule_policy_id")
+        object.__setattr__(
+            self,
+            "lifecycle_version",
+            negotiate_lifecycle_version(self.lifecycle_version, self.effective_phase),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible canonical target."""
+        return {
+            "intent_id": self.intent_id,
+            "decision_time": self.decision_time.isoformat(),
+            "information_cutoff": self.information_cutoff.isoformat(),
+            "effective_session": self.effective_session.isoformat(),
+            "effective_phase": self.effective_phase.value,
+            "targets": [
+                {"asset": target.asset, "measure": target.measure.value, "value": target.value}
+                for target in self.targets
+            ],
+            "idempotency_key": self.idempotency_key,
+            "measure": self.measure.value,
+            "cash_buffer": self.cash_buffer,
+            "rounding": self.rounding.value,
+            "residual": self.residual.value,
+            "reason": self.reason.value,
+            "lifecycle_version": self.lifecycle_version.value,
+            "position_rule_policy_id": self.position_rule_policy_id,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> CanonicalTargetIntent:
+        """Restore and validate a canonical target."""
+        targets = value["targets"]
+        if not isinstance(targets, Sequence) or isinstance(targets, str | bytes):
+            raise TypeError("targets must be a sequence")
+        return cls(
+            intent_id=value["intent_id"],
+            decision_time=datetime.fromisoformat(value["decision_time"]),
+            information_cutoff=datetime.fromisoformat(value["information_cutoff"]),
+            effective_session=date.fromisoformat(value["effective_session"]),
+            effective_phase=LifecyclePhase(value["effective_phase"]),
+            targets=tuple(AssetTarget.from_mapping(target) for target in targets),
+            idempotency_key=value["idempotency_key"],
+            measure=TargetMeasure(value["measure"]),
+            cash_buffer=value["cash_buffer"],
+            rounding=RoundingPolicy(value["rounding"]),
+            residual=ResidualPolicy(value["residual"]),
+            reason=IntentReason(value["reason"]),
+            lifecycle_version=value["lifecycle_version"],
+            position_rule_policy_id=value.get("position_rule_policy_id"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OrderParameters:
+    """Typed prices for limit, stop, and trailing child orders."""
+
+    limit_price: float | None = None
+    stop_price: float | None = None
+    trail_amount: float | None = None
+    trail_percent: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("limit_price", "stop_price", "trail_amount", "trail_percent"):
+            value = getattr(self, name)
+            if value is not None and _finite(value, name) <= 0:
+                raise ValueError(f"{name} must be positive")
+
+
+_REQUIRED_CAPABILITY: dict[OrderType, ExecutionCapability | None] = {
+    OrderType.MARKET: None,
+    OrderType.LIMIT: ExecutionCapability.LIMIT,
+    OrderType.STOP: ExecutionCapability.STOP,
+    OrderType.STOP_LIMIT: ExecutionCapability.STOP_LIMIT,
+    OrderType.TRAILING_STOP: ExecutionCapability.TRAILING_STOP,
+    OrderType.MOC: ExecutionCapability.CLOSE_AUCTION,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalChildOrderIntent:
+    """Unsigned venue-facing order intent with target lineage."""
+
+    child_intent_id: str
+    target_intent_id: str
+    idempotency_key: str
+    asset: str
+    side: OrderSide
+    quantity: float
+    order_type: OrderType
+    parameters: OrderParameters
+    eligibility_phase: LifecyclePhase
+    fill_eligibility: FillEligibility
+    time_in_force: TimeInForce
+    session_policy: SessionPolicy
+    capabilities: tuple[ExecutionCapability, ...]
+    reason: IntentReason
+    lifecycle_version: LifecycleVersion = LifecycleVersion.V1
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.child_intent_id, "child_intent_id"),
+            (self.target_intent_id, "target_intent_id"),
+            (self.idempotency_key, "idempotency_key"),
+            (self.asset, "asset"),
+        ):
+            _non_empty(value, name)
+        if _finite(self.quantity, "quantity") <= 0:
+            raise ValueError("quantity must be positive and unsigned")
+        _intent_phase(self.eligibility_phase)
+        required = _REQUIRED_CAPABILITY[self.order_type]
+        if required is not None and required not in self.capabilities:
+            raise ValueError(f"{self.order_type.value} requires capability {required.value}")
+        if len(self.capabilities) != len(set(self.capabilities)):
+            raise ValueError("capabilities must be unique")
+        self._validate_parameters()
+        object.__setattr__(
+            self,
+            "lifecycle_version",
+            negotiate_lifecycle_version(self.lifecycle_version, self.eligibility_phase),
+        )
+
+    def _validate_parameters(self) -> None:
+        parameters = self.parameters
+        if self.order_type is OrderType.LIMIT and parameters.limit_price is None:
+            raise ValueError("limit order requires limit_price")
+        if self.order_type is OrderType.STOP and parameters.stop_price is None:
+            raise ValueError("stop order requires stop_price")
+        if self.order_type is OrderType.STOP_LIMIT and (
+            parameters.stop_price is None or parameters.limit_price is None
+        ):
+            raise ValueError("stop_limit order requires stop_price and limit_price")
+        trailing_values = (parameters.trail_amount, parameters.trail_percent)
+        if (
+            self.order_type is OrderType.TRAILING_STOP
+            and sum(value is not None for value in trailing_values) != 1
+        ):
+            raise ValueError("trailing_stop requires exactly one trailing parameter")
+
+    def remaining_after_fill(self, filled_quantity: float) -> float:
+        """Return the validated unsigned remainder after a partial fill."""
+        filled = _finite(filled_quantity, "filled_quantity")
+        if not 0 <= filled <= self.quantity:
+            raise ValueError("filled_quantity must be between zero and order quantity")
+        return self.quantity - filled
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible child intent."""
+        return {
+            "child_intent_id": self.child_intent_id,
+            "target_intent_id": self.target_intent_id,
+            "idempotency_key": self.idempotency_key,
+            "asset": self.asset,
+            "side": self.side.value,
+            "quantity": self.quantity,
+            "order_type": self.order_type.value,
+            "parameters": asdict(self.parameters),
+            "eligibility_phase": self.eligibility_phase.value,
+            "fill_eligibility": self.fill_eligibility.value,
+            "time_in_force": self.time_in_force.value,
+            "session_policy": self.session_policy.value,
+            "capabilities": [capability.value for capability in self.capabilities],
+            "reason": self.reason.value,
+            "lifecycle_version": self.lifecycle_version.value,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> CanonicalChildOrderIntent:
+        """Restore and validate a child intent."""
+        parameters = value["parameters"]
+        if not isinstance(parameters, Mapping):
+            raise TypeError("parameters must be a mapping")
+        return cls(
+            child_intent_id=value["child_intent_id"],
+            target_intent_id=value["target_intent_id"],
+            idempotency_key=value["idempotency_key"],
+            asset=value["asset"],
+            side=OrderSide(value["side"]),
+            quantity=value["quantity"],
+            order_type=OrderType(value["order_type"]),
+            parameters=OrderParameters(**parameters),
+            eligibility_phase=LifecyclePhase(value["eligibility_phase"]),
+            fill_eligibility=FillEligibility(value["fill_eligibility"]),
+            time_in_force=TimeInForce(value["time_in_force"]),
+            session_policy=SessionPolicy(value["session_policy"]),
+            capabilities=tuple(
+                ExecutionCapability(capability) for capability in value["capabilities"]
+            ),
+            reason=IntentReason(value["reason"]),
+            lifecycle_version=value["lifecycle_version"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPolicy:
+    """Recorded execution assumptions used by an engine or venue."""
+
+    policy_id: str
+    market_fill_phase: LifecyclePhase
+    opening_auction: ExecutionBehavior
+    moc: ExecutionBehavior
+    limit: ExecutionBehavior
+    stop: ExecutionBehavior
+    stop_limit: ExecutionBehavior
+    trailing: ExecutionBehavior
+    contingent: ExecutionBehavior
+    fee_bps: float
+    slippage_bps: float
+    spread_bps: float
+    impact_bps: float
+    latency_ms: float
+    liquidity_fraction: float
+    allow_partial_fills: bool
+    bar_path: BarPathPolicy
+
+    def __post_init__(self) -> None:
+        _non_empty(self.policy_id, "policy_id")
+        for name in ("fee_bps", "slippage_bps", "spread_bps", "impact_bps", "latency_ms"):
+            if _finite(getattr(self, name), name) < 0:
+                raise ValueError(f"{name} must be non-negative")
+        liquidity = _finite(self.liquidity_fraction, "liquidity_fraction")
+        if not 0 < liquidity <= 1:
+            raise ValueError("liquidity_fraction must be in (0, 1]")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible execution policy."""
+        return {
+            "policy_id": self.policy_id,
+            "market_fill_phase": self.market_fill_phase.value,
+            "opening_auction": self.opening_auction.value,
+            "moc": self.moc.value,
+            "limit": self.limit.value,
+            "stop": self.stop.value,
+            "stop_limit": self.stop_limit.value,
+            "trailing": self.trailing.value,
+            "contingent": self.contingent.value,
+            "fee_bps": self.fee_bps,
+            "slippage_bps": self.slippage_bps,
+            "spread_bps": self.spread_bps,
+            "impact_bps": self.impact_bps,
+            "latency_ms": self.latency_ms,
+            "liquidity_fraction": self.liquidity_fraction,
+            "allow_partial_fills": self.allow_partial_fills,
+            "bar_path": self.bar_path.value,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> ExecutionPolicy:
+        """Restore and validate an execution policy."""
+        return cls(
+            policy_id=value["policy_id"],
+            market_fill_phase=LifecyclePhase(value["market_fill_phase"]),
+            opening_auction=ExecutionBehavior(value["opening_auction"]),
+            moc=ExecutionBehavior(value["moc"]),
+            limit=ExecutionBehavior(value["limit"]),
+            stop=ExecutionBehavior(value["stop"]),
+            stop_limit=ExecutionBehavior(value["stop_limit"]),
+            trailing=ExecutionBehavior(value["trailing"]),
+            contingent=ExecutionBehavior(value["contingent"]),
+            fee_bps=value["fee_bps"],
+            slippage_bps=value["slippage_bps"],
+            spread_bps=value["spread_bps"],
+            impact_bps=value["impact_bps"],
+            latency_ms=value["latency_ms"],
+            liquidity_fraction=value["liquidity_fraction"],
+            allow_partial_fills=bool(value["allow_partial_fills"]),
+            bar_path=BarPathPolicy(value["bar_path"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PositionRuleDefinition:
+    """One versioned position rule or composition node."""
+
+    rule_id: str
+    rule_type: PositionRuleType
+    parameters: tuple[tuple[str, float], ...] = ()
+    children: tuple[str, ...] = ()
+    composition: RuleComposition | None = None
+
+    def __post_init__(self) -> None:
+        _non_empty(self.rule_id, "rule_id")
+        names = tuple(name for name, _ in self.parameters)
+        if len(names) != len(set(names)) or any(not name for name in names):
+            raise ValueError("rule parameter names must be non-empty and unique")
+        for name, value in self.parameters:
+            _finite(value, f"rule parameter {name}")
+        if bool(self.children) != (self.composition is not None):
+            raise ValueError("composition and children must be provided together")
+        if self.children and len(self.children) != len(set(self.children)):
+            raise ValueError("rule children must be unique")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible rule definition."""
+        return {
+            "rule_id": self.rule_id,
+            "rule_type": self.rule_type.value,
+            "parameters": [{"name": name, "value": value} for name, value in self.parameters],
+            "children": list(self.children),
+            "composition": self.composition.value if self.composition is not None else None,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> PositionRuleDefinition:
+        """Restore and validate a rule definition."""
+        return cls(
+            rule_id=value["rule_id"],
+            rule_type=PositionRuleType(value["rule_type"]),
+            parameters=tuple(
+                (parameter["name"], parameter["value"]) for parameter in value.get("parameters", ())
+            ),
+            children=tuple(value.get("children", ())),
+            composition=(
+                RuleComposition(value["composition"])
+                if value.get("composition") is not None
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PositionRulePolicy:
+    """Versioned rule graph with one root and explicit evaluation location."""
+
+    policy_id: str
+    root_rule_id: str
+    rules: tuple[PositionRuleDefinition, ...]
+    evaluation_mode: EvaluationMode
+    lifecycle_version: LifecycleVersion = LifecycleVersion.V1
+
+    def __post_init__(self) -> None:
+        _non_empty(self.policy_id, "policy_id")
+        _non_empty(self.root_rule_id, "root_rule_id")
+        rule_ids = tuple(rule.rule_id for rule in self.rules)
+        if len(rule_ids) != len(set(rule_ids)):
+            raise ValueError("position rule ids must be unique")
+        if self.root_rule_id not in rule_ids:
+            raise ValueError("root_rule_id must identify a rule")
+        unknown_children = {
+            child for rule in self.rules for child in rule.children if child not in rule_ids
+        }
+        if unknown_children:
+            raise ValueError(f"unknown position rule children: {sorted(unknown_children)}")
+        object.__setattr__(
+            self, "lifecycle_version", negotiate_lifecycle_version(self.lifecycle_version)
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible position-rule policy."""
+        return {
+            "policy_id": self.policy_id,
+            "root_rule_id": self.root_rule_id,
+            "rules": [rule.to_dict() for rule in self.rules],
+            "evaluation_mode": self.evaluation_mode.value,
+            "lifecycle_version": self.lifecycle_version.value,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> PositionRulePolicy:
+        """Restore and validate a position-rule policy."""
+        return cls(
+            policy_id=value["policy_id"],
+            root_rule_id=value["root_rule_id"],
+            rules=tuple(PositionRuleDefinition.from_mapping(rule) for rule in value["rules"]),
+            evaluation_mode=EvaluationMode(value["evaluation_mode"]),
+            lifecycle_version=value["lifecycle_version"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PositionRuleState:
+    """Portable state required to continue position-rule evaluation."""
+
+    policy_id: str
+    asset: str
+    activation: RuleActivation
+    entry_time: datetime
+    entry_price: float
+    entry_quantity: float
+    high_water_mark: float
+    low_water_mark: float
+    max_favorable_excursion: float
+    max_adverse_excursion: float
+    remaining_exit_quantity: float
+    idempotency_key: str
+    action: PositionActionType
+    exit_reason: ExitReason
+    evaluation_mode: EvaluationMode
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.policy_id, "policy_id"),
+            (self.asset, "asset"),
+            (self.idempotency_key, "idempotency_key"),
+        ):
+            _non_empty(value, name)
+        object.__setattr__(self, "entry_time", _utc(self.entry_time, "entry_time"))
+        for name in (
+            "entry_price",
+            "entry_quantity",
+            "high_water_mark",
+            "low_water_mark",
+            "max_favorable_excursion",
+            "max_adverse_excursion",
+            "remaining_exit_quantity",
+        ):
+            _finite(getattr(self, name), name)
+        if self.entry_price <= 0 or self.high_water_mark <= 0 or self.low_water_mark <= 0:
+            raise ValueError("position prices must be positive")
+        if self.entry_quantity <= 0:
+            raise ValueError("entry_quantity must be positive")
+        if not 0 <= self.remaining_exit_quantity <= self.entry_quantity:
+            raise ValueError("remaining_exit_quantity must be between zero and entry_quantity")
+        if self.low_water_mark > self.high_water_mark:
+            raise ValueError("low_water_mark must not exceed high_water_mark")
+        if self.action is PositionActionType.HOLD and self.exit_reason is not ExitReason.NONE:
+            raise ValueError("hold action requires exit reason none")
+        if self.action is not PositionActionType.HOLD and self.exit_reason is ExitReason.NONE:
+            raise ValueError("exit or adjustment action requires an exit reason")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible position-rule state."""
+        return {
+            "policy_id": self.policy_id,
+            "asset": self.asset,
+            "activation": self.activation.value,
+            "entry_time": self.entry_time.isoformat(),
+            "entry_price": self.entry_price,
+            "entry_quantity": self.entry_quantity,
+            "high_water_mark": self.high_water_mark,
+            "low_water_mark": self.low_water_mark,
+            "max_favorable_excursion": self.max_favorable_excursion,
+            "max_adverse_excursion": self.max_adverse_excursion,
+            "remaining_exit_quantity": self.remaining_exit_quantity,
+            "idempotency_key": self.idempotency_key,
+            "action": self.action.value,
+            "exit_reason": self.exit_reason.value,
+            "evaluation_mode": self.evaluation_mode.value,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> PositionRuleState:
+        """Restore and validate position-rule state."""
+        return cls(
+            policy_id=value["policy_id"],
+            asset=value["asset"],
+            activation=RuleActivation(value["activation"]),
+            entry_time=datetime.fromisoformat(value["entry_time"]),
+            entry_price=value["entry_price"],
+            entry_quantity=value["entry_quantity"],
+            high_water_mark=value["high_water_mark"],
+            low_water_mark=value["low_water_mark"],
+            max_favorable_excursion=value["max_favorable_excursion"],
+            max_adverse_excursion=value["max_adverse_excursion"],
+            remaining_exit_quantity=value["remaining_exit_quantity"],
+            idempotency_key=value["idempotency_key"],
+            action=PositionActionType(value["action"]),
+            exit_reason=ExitReason(value["exit_reason"]),
+            evaluation_mode=EvaluationMode(value["evaluation_mode"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class IntentComparison:
+    """Field-level canonical-intent comparison result."""
+
+    equivalent: bool
+    differences: tuple[str, ...]
+
+
+def compare_target_intents(
+    left: CanonicalTargetIntent, right: CanonicalTargetIntent
+) -> IntentComparison:
+    """Compare strategy decisions before venue-dependent outcomes."""
+    left_record = left.to_dict()
+    right_record = right.to_dict()
+    differences = tuple(key for key in left_record if left_record.get(key) != right_record.get(key))
+    return IntentComparison(not differences, differences)
+
+
+def compare_child_intents(
+    left: CanonicalChildOrderIntent, right: CanonicalChildOrderIntent
+) -> IntentComparison:
+    """Compare child orders without comparing venue fill outcomes."""
+    left_record = left.to_dict()
+    right_record = right.to_dict()
+    differences = tuple(key for key in left_record if left_record.get(key) != right_record.get(key))
+    return IntentComparison(not differences, differences)
+
+
+def validate_child_lineage(target: CanonicalTargetIntent, child: CanonicalChildOrderIntent) -> None:
+    """Require child identity, lifecycle version, phase, and asset lineage."""
+    if child.target_intent_id != target.intent_id:
+        raise ValueError("child target_intent_id does not match target")
+    if child.lifecycle_version is not target.lifecycle_version:
+        raise ValueError("child lifecycle version does not match target")
+    if child.asset not in {item.asset for item in target.targets}:
+        raise ValueError("child asset is absent from target")
+    phase_order = tuple(LifecyclePhase)
+    if phase_order.index(child.eligibility_phase) < phase_order.index(target.effective_phase):
+        raise ValueError("child eligibility phase precedes target effective phase")
+
+
+def canonical_intent_fixture() -> dict[str, Any]:
+    """Return the golden contract fixture consumed by both engines."""
+    target = CanonicalTargetIntent(
+        intent_id="target-1",
+        decision_time=datetime(2026, 8, 8, 13, 0, tzinfo=UTC),
+        information_cutoff=datetime(2026, 8, 8, 12, 59, 59, tzinfo=UTC),
+        effective_session=date(2026, 8, 10),
+        effective_phase=LifecyclePhase.PRE_OPEN,
+        targets=(AssetTarget("SPY", TargetMeasure.WEIGHT, 0.5),),
+        idempotency_key="target-2026-08-10",
+        measure=TargetMeasure.WEIGHT,
+        cash_buffer=0.05,
+        rounding=RoundingPolicy.TOWARD_ZERO,
+        residual=ResidualPolicy.KEEP_CASH,
+        reason=IntentReason.REBALANCE,
+    )
+    child = CanonicalChildOrderIntent(
+        child_intent_id="child-1",
+        target_intent_id=target.intent_id,
+        idempotency_key="child-2026-08-10-SPY",
+        asset="SPY",
+        side=OrderSide.BUY,
+        quantity=10,
+        order_type=OrderType.MARKET,
+        parameters=OrderParameters(),
+        eligibility_phase=LifecyclePhase.PRE_OPEN,
+        fill_eligibility=FillEligibility.OPENING_AUCTION,
+        time_in_force=TimeInForce.OPG,
+        session_policy=SessionPolicy.REGULAR,
+        capabilities=(ExecutionCapability.OPENING_AUCTION,),
+        reason=IntentReason.REBALANCE,
+    )
+    return {"target": target.to_dict(), "child": child.to_dict()}
+
+
+__all__ = [
+    "AssetTarget",
+    "BarPathPolicy",
+    "CanonicalChildOrderIntent",
+    "CanonicalTargetIntent",
+    "EvaluationMode",
+    "ExecutionBehavior",
+    "ExecutionCapability",
+    "ExecutionPolicy",
+    "ExitReason",
+    "FillEligibility",
+    "IntentComparison",
+    "IntentReason",
+    "OrderParameters",
+    "OrderSide",
+    "OrderType",
+    "PositionActionType",
+    "PositionRuleDefinition",
+    "PositionRulePolicy",
+    "PositionRuleState",
+    "PositionRuleType",
+    "ResidualPolicy",
+    "RoundingPolicy",
+    "RuleActivation",
+    "RuleComposition",
+    "SessionPolicy",
+    "TargetMeasure",
+    "TimeInForce",
+    "canonical_intent_fixture",
+    "compare_child_intents",
+    "compare_target_intents",
+    "validate_child_lineage",
+]
