@@ -260,6 +260,8 @@ def test_market_event_rejects_non_json_metadata(metadata: object) -> None:
         (lambda: BarPayload(100, 99, 98, 99, 1), ValueError, "high"),
         (lambda: BarPayload(100, 101, 100, 99, 1), ValueError, "low"),
         (lambda: BarPayload(100, 101, 99, 100, -1), ValueError, "volume"),
+        (lambda: BarPayload(0, 101, 99, 100, 1), ValueError, "positive"),
+        (lambda: BarPayload(100, 101, -1, 100, 1), ValueError, "positive"),
         (lambda: BarPayload(100, math.inf, 99, 100, 1), ValueError, "finite"),
         (lambda: BarPayload(100, 101, 99, 100, cast("Any", True)), TypeError, "number"),
         (lambda: TradePayload(0, 1), ValueError, "price"),

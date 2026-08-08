@@ -190,6 +190,8 @@ class BarPayload:
             name: _finite(getattr(self, name), name)
             for name in ("open", "high", "low", "close", "volume")
         }
+        if any(values[name] <= 0 for name in ("open", "high", "low", "close")):
+            raise ValueError("OHLC prices must be positive")
         if values["volume"] < 0:
             raise ValueError("volume must be non-negative")
         if values["high"] < max(values["open"], values["low"], values["close"]):
