@@ -492,7 +492,7 @@ LIFECYCLE_V1 = LifecycleContract(
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.MARKET_EVENT,
-            "on_market_event",
+            "on_data",
             _INTRABAR,
             True,
             CallbackCardinality.ONCE_PER_EVENT,
