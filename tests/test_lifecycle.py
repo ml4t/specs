@@ -149,12 +149,20 @@ def test_historical_strategy_compatibility_is_explicit() -> None:
 
 @pytest.mark.parametrize("kind", list(MarketEventKind))
 def test_market_event_variants_round_trip(kind: MarketEventKind) -> None:
-    original = event(kind)
+    original = event(
+        kind,
+        metadata={"venue": "fixture", "conditions": ["regular"], "latency_ms": 0.5},
+    )
     restored = MarketEvent.from_mapping(original.to_dict())
 
     assert restored == original
     assert restored.event_time.tzinfo is UTC
     assert restored.receipt_time.tzinfo is UTC
+    assert restored.metadata == {
+        "venue": "fixture",
+        "conditions": ["regular"],
+        "latency_ms": 0.5,
+    }
 
 
 def test_market_event_accepts_gap_evidence_without_sequence() -> None:
@@ -224,6 +232,25 @@ def test_market_event_mapping_rejects_malformed_nested_values() -> None:
     payload["gap"] = []
     with pytest.raises(TypeError, match="gap"):
         MarketEvent.from_mapping(payload)
+
+    payload = event().to_dict()
+    payload["metadata"] = []
+    with pytest.raises(TypeError, match="metadata"):
+        MarketEvent.from_mapping(payload)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"value": math.nan},
+        {"timestamp": EVENT_TIME},
+        {1: "not a string key"},
+        ["not", "a", "mapping"],
+    ],
+)
+def test_market_event_rejects_non_json_metadata(metadata: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="metadata"):
+        event(metadata=metadata)
 
 
 @pytest.mark.parametrize(

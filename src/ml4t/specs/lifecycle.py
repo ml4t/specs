@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -134,6 +134,25 @@ def _utc(value: datetime, name: str) -> datetime:
     return value.astimezone(UTC)
 
 
+def _json_metadata(value: object, path: str = "metadata") -> object:
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} must contain finite numbers")
+        return value
+    if isinstance(value, Mapping):
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise TypeError(f"{path} keys must be non-empty strings")
+            result[key] = _json_metadata(item, f"{path}.{key}")
+        return result
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return [_json_metadata(item, f"{path}[]") for item in value]
+    raise TypeError(f"{path} must contain only JSON-compatible values")
+
+
 @dataclass(frozen=True, slots=True)
 class GapEvidence:
     """Evidence that a provider sequence is continuous or has a known gap."""
@@ -247,6 +266,7 @@ class MarketEvent:
     payload: MarketEventPayload
     provider_sequence: str | int | None = None
     gap: GapEvidence | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         version = negotiate_lifecycle_version(self.version)
@@ -275,6 +295,10 @@ class MarketEvent:
             raise ValueError("provider_sequence must not be empty")
         if isinstance(self.provider_sequence, int) and self.provider_sequence < 0:
             raise ValueError("provider_sequence must be non-negative")
+        metadata = _json_metadata(self.metadata)
+        if not isinstance(metadata, dict):
+            raise TypeError("metadata must be a mapping")
+        object.__setattr__(self, "metadata", metadata)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible event record."""
@@ -289,6 +313,7 @@ class MarketEvent:
             "payload": asdict(self.payload),
             "provider_sequence": self.provider_sequence,
             "gap": asdict(self.gap) if self.gap is not None else None,
+            "metadata": dict(self.metadata),
         }
 
     @classmethod
@@ -301,6 +326,9 @@ class MarketEvent:
         gap_value = value.get("gap")
         if gap_value is not None and not isinstance(gap_value, Mapping):
             raise TypeError("gap must be a mapping or None")
+        metadata = value.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            raise TypeError("metadata must be a mapping")
         return cls(
             version=value["version"],
             event_time=datetime.fromisoformat(value["event_time"]),
@@ -312,6 +340,7 @@ class MarketEvent:
             payload=_PAYLOAD_TYPES[kind](**payload_value),
             provider_sequence=value.get("provider_sequence"),
             gap=GapEvidence.from_mapping(gap_value) if gap_value is not None else None,
+            metadata=metadata,
         )
 
 
