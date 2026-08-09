@@ -113,6 +113,8 @@ including composite parents and stateful leaves. Its remaining quantity is post-
 exit quantity and adjusted stop price are stored with the latest action.
 `SCALED_EXIT` sizes an exit order below the open position quantity; it does not require the venue
 to partially fill that smaller order, so it is independent of `allow_partial_fills`.
+Stop-loss, take-profit, and trailing-stop rules use the required `pct` parameter. Time exits use
+the required positive integer `max_bars`; scaled exits use ordered `ScaledExitTarget` values.
 
 These contracts serialize to JSON-compatible mappings. Their comparison helpers report exact
 field-level differences, including generated identities and timestamps. Callers comparing two

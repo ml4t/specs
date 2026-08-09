@@ -245,7 +245,7 @@ class TradePayload:
 
 @dataclass(frozen=True, slots=True)
 class QuotePayload:
-    """Validated quote event payload."""
+    """Validated quote payload that preserves locked and crossed feed observations."""
 
     bid: float
     ask: float

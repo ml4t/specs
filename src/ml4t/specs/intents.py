@@ -184,6 +184,7 @@ class ExitReason(StrEnum):
     TAKE_PROFIT = "take_profit"
     TRAILING_STOP = "trailing_stop"
     TIME_EXIT = "time_exit"
+    SCALED_EXIT = "scaled_exit"
     SIGNAL = "signal"
     LIQUIDATION = "liquidation"
 
@@ -920,12 +921,54 @@ def validate_child_against_policy(
 
 
 @dataclass(frozen=True, slots=True)
+class ScaledExitTarget:
+    """One ordered return threshold and fraction of the remaining position to exit."""
+
+    return_threshold: float
+    exit_fraction: float
+
+    def __post_init__(self) -> None:
+        threshold = _finite(self.return_threshold, "return_threshold")
+        fraction = _finite(self.exit_fraction, "exit_fraction")
+        object.__setattr__(self, "return_threshold", threshold)
+        object.__setattr__(self, "exit_fraction", fraction)
+        if threshold <= 0:
+            raise ValueError("return_threshold must be positive")
+        if not 0 < fraction <= 1:
+            raise ValueError("exit_fraction must be in (0, 1]")
+
+    def to_dict(self) -> dict[str, float]:
+        """Return a JSON-compatible scaled-exit target."""
+        return {
+            "return_threshold": self.return_threshold,
+            "exit_fraction": self.exit_fraction,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> ScaledExitTarget:
+        """Restore and validate a scaled-exit target."""
+        _require_fields(value, "return_threshold", "exit_fraction")
+        return cls(value["return_threshold"], value["exit_fraction"])
+
+
+_RULE_PARAMETER_NAMES: dict[PositionRuleType, frozenset[str]] = {
+    PositionRuleType.STOP_LOSS: frozenset({"pct"}),
+    PositionRuleType.TAKE_PROFIT: frozenset({"pct"}),
+    PositionRuleType.TRAILING_STOP: frozenset({"pct"}),
+    PositionRuleType.TIME_EXIT: frozenset({"max_bars"}),
+    PositionRuleType.SCALED_EXIT: frozenset(),
+    PositionRuleType.COMPOSITE: frozenset(),
+}
+
+
+@dataclass(frozen=True, slots=True)
 class PositionRuleDefinition:
     """One versioned position rule or composition node."""
 
     rule_id: str
     rule_type: PositionRuleType
     parameters: tuple[tuple[str, float], ...] = ()
+    scaled_targets: tuple[ScaledExitTarget, ...] = ()
     children: tuple[str, ...] = ()
     composition: RuleComposition | None = None
 
@@ -934,6 +977,8 @@ class PositionRuleDefinition:
             raise TypeError("parameters must be an iterable of name-value pairs")
         if isinstance(self.children, str | bytes):
             raise TypeError("children must be an iterable of rule ids")
+        if isinstance(self.scaled_targets, str | bytes):
+            raise TypeError("scaled_targets must be an iterable of ScaledExitTarget values")
         object.__setattr__(self, "rule_type", PositionRuleType(self.rule_type))
         try:
             raw_parameters = tuple(self.parameters)
@@ -960,7 +1005,17 @@ class PositionRuleDefinition:
         except TypeError:
             raise TypeError("children must be an iterable of rule ids") from None
         children = tuple(_non_empty(child, "rule child") for child in raw_children)
+        try:
+            scaled_targets = tuple(self.scaled_targets)
+        except TypeError:
+            raise TypeError(
+                "scaled_targets must be an iterable of ScaledExitTarget values"
+            ) from None
+        if any(not isinstance(target, ScaledExitTarget) for target in scaled_targets):
+            raise TypeError("each scaled target must be a ScaledExitTarget")
+        scaled_targets = tuple(sorted(scaled_targets, key=lambda target: target.return_threshold))
         object.__setattr__(self, "parameters", parameters)
+        object.__setattr__(self, "scaled_targets", scaled_targets)
         object.__setattr__(self, "children", children)
         if self.composition is not None:
             object.__setattr__(self, "composition", RuleComposition(self.composition))
@@ -968,6 +1023,27 @@ class PositionRuleDefinition:
         names = tuple(name for name, _ in parameters)
         if len(names) != len(set(names)):
             raise ValueError("rule parameter names must be unique")
+        expected_names = _RULE_PARAMETER_NAMES[self.rule_type]
+        if set(names) != expected_names:
+            raise ValueError(
+                f"{self.rule_type.value} rule parameters must be exactly: "
+                + (", ".join(sorted(expected_names)) if expected_names else "none")
+            )
+        parameter_values = dict(parameters)
+        if "pct" in parameter_values and parameter_values["pct"] <= 0:
+            raise ValueError("pct rule parameter must be positive")
+        if self.rule_type is PositionRuleType.TIME_EXIT and (
+            parameter_values["max_bars"] <= 0 or not parameter_values["max_bars"].is_integer()
+        ):
+            raise ValueError("max_bars rule parameter must be a positive integer")
+        is_scaled = self.rule_type is PositionRuleType.SCALED_EXIT
+        if is_scaled and not self.scaled_targets:
+            raise ValueError("scaled_exit rule requires scaled_targets")
+        if not is_scaled and self.scaled_targets:
+            raise ValueError("scaled_targets are only valid for scaled_exit rules")
+        thresholds = tuple(target.return_threshold for target in self.scaled_targets)
+        if len(thresholds) != len(set(thresholds)):
+            raise ValueError("scaled exit return thresholds must be unique")
         is_composite = self.rule_type is PositionRuleType.COMPOSITE
         if is_composite and (not self.children or self.composition is None):
             raise ValueError("composite rules require children and composition")
@@ -982,6 +1058,7 @@ class PositionRuleDefinition:
             "rule_id": self.rule_id,
             "rule_type": self.rule_type.value,
             "parameters": [{"name": name, "value": value} for name, value in self.parameters],
+            "scaled_targets": [target.to_dict() for target in self.scaled_targets],
             "children": list(self.children),
             "composition": self.composition.value if self.composition is not None else None,
         }
@@ -1000,11 +1077,21 @@ class PositionRuleDefinition:
         raw_children = value.get("children", ())
         if not isinstance(raw_children, Sequence) or isinstance(raw_children, str | bytes):
             raise TypeError("children must be a sequence")
+        raw_scaled_targets = value.get("scaled_targets", ())
+        if not isinstance(raw_scaled_targets, Sequence) or isinstance(
+            raw_scaled_targets, str | bytes
+        ):
+            raise TypeError("scaled_targets must be a sequence")
+        if any(not isinstance(target, Mapping) for target in raw_scaled_targets):
+            raise TypeError("each scaled target must be a mapping")
         return cls(
             rule_id=value["rule_id"],
             rule_type=PositionRuleType(value["rule_type"]),
             parameters=tuple(
                 (parameter["name"], parameter["value"]) for parameter in raw_parameters
+            ),
+            scaled_targets=tuple(
+                ScaledExitTarget.from_mapping(target) for target in raw_scaled_targets
             ),
             children=tuple(raw_children),
             composition=(
@@ -1317,17 +1404,21 @@ class PositionRuleState:
         )
 
 
-_RULE_EXIT_REASON: dict[PositionRuleType, ExitReason] = {
+_INTRINSIC_RULE_EXIT_REASON: dict[PositionRuleType, ExitReason] = {
     PositionRuleType.STOP_LOSS: ExitReason.STOP_LOSS,
     PositionRuleType.TAKE_PROFIT: ExitReason.TAKE_PROFIT,
     PositionRuleType.TRAILING_STOP: ExitReason.TRAILING_STOP,
     PositionRuleType.TIME_EXIT: ExitReason.TIME_EXIT,
+    PositionRuleType.SCALED_EXIT: ExitReason.SCALED_EXIT,
 }
 
 _RULE_EXECUTION_FIELD: dict[PositionRuleType, str] = {
     PositionRuleType.STOP_LOSS: "stop",
     PositionRuleType.TAKE_PROFIT: "limit",
     PositionRuleType.TRAILING_STOP: "trailing",
+    PositionRuleType.TIME_EXIT: "contingent",
+    PositionRuleType.SCALED_EXIT: "contingent",
+    PositionRuleType.COMPOSITE: "contingent",
 }
 
 
@@ -1342,7 +1433,7 @@ def validate_state_against_policy(policy: PositionRulePolicy, state: PositionRul
     rules = {rule.rule_id: rule for rule in policy.rules}
     if state.rule_id not in rules:
         raise ValueError("state rule_id is absent from position-rule policy")
-    expected_reason = _RULE_EXIT_REASON.get(rules[state.rule_id].rule_type)
+    expected_reason = _INTRINSIC_RULE_EXIT_REASON.get(rules[state.rule_id].rule_type)
     if expected_reason is not None and state.exit_reason not in {
         ExitReason.NONE,
         expected_reason,
@@ -1360,9 +1451,7 @@ def validate_rule_policy_against_execution_policy(
     if execution.lifecycle_version is not rules.lifecycle_version:
         raise ValueError("position-rule and execution policy lifecycle versions do not match")
     for rule in rules.rules:
-        field = _RULE_EXECUTION_FIELD.get(rule.rule_type)
-        if field is None:
-            continue
+        field = _RULE_EXECUTION_FIELD[rule.rule_type]
         behavior = getattr(execution, field)
         if behavior is ExecutionBehavior.DISABLED:
             raise ValueError(
@@ -1497,6 +1586,7 @@ __all__ = [
     "RoundingPolicy",
     "RuleActivation",
     "RuleComposition",
+    "ScaledExitTarget",
     "SessionPolicy",
     "TargetMeasure",
     "TimeInForce",

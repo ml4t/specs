@@ -488,6 +488,9 @@ def test_market_events_accept_zero_and_negative_instrument_prices() -> None:
     assert event(payload=negative_bar).payload == negative_bar
     assert TradePayload(0, 1).price == 0
     assert QuotePayload(-2, -1, 1, 1).bid == -2
+
+
+def test_quote_payload_preserves_crossed_feed_observations() -> None:
     assert QuotePayload(2, 1, 1, 1).ask == 1
 
 

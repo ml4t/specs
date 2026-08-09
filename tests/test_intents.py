@@ -37,6 +37,7 @@ from ml4t.specs import (
     RoundingPolicy,
     RuleActivation,
     RuleComposition,
+    ScaledExitTarget,
     SessionPolicy,
     TargetMeasure,
     TimeInForce,
@@ -144,6 +145,24 @@ def rule_state(**overrides: Any) -> PositionRuleState:
     }
     values.update(overrides)
     return PositionRuleState(**cast("Any", values))
+
+
+def position_rule(
+    rule_id: str, rule_type: PositionRuleType, **overrides: Any
+) -> PositionRuleDefinition:
+    parameters = {
+        PositionRuleType.STOP_LOSS: (("pct", 0.05),),
+        PositionRuleType.TAKE_PROFIT: (("pct", 0.1),),
+        PositionRuleType.TRAILING_STOP: (("pct", 0.05),),
+        PositionRuleType.TIME_EXIT: (("max_bars", 20),),
+        PositionRuleType.SCALED_EXIT: (),
+        PositionRuleType.COMPOSITE: (),
+    }[rule_type]
+    values: dict[str, Any] = {"parameters": parameters}
+    if rule_type is PositionRuleType.SCALED_EXIT:
+        values["scaled_targets"] = (ScaledExitTarget(0.05, 0.25),)
+    values.update(overrides)
+    return PositionRuleDefinition(rule_id, rule_type, **values)
 
 
 def test_golden_fixture_loads_unchanged_and_round_trips() -> None:
@@ -1033,20 +1052,62 @@ def test_position_rule_definition_and_policy_round_trip() -> None:
     assert PositionRulePolicy.from_mapping(original.to_dict()) == original
     assert PositionRuleDefinition.from_mapping(stop.to_dict()) == stop
 
-    reordered_stop = PositionRuleDefinition(
-        "stop",
-        PositionRuleType.STOP_LOSS,
-        parameters=(("z", 1), ("a", 2)),
+    reordered_scaled = position_rule(
+        "scale",
+        PositionRuleType.SCALED_EXIT,
+        scaled_targets=(ScaledExitTarget(0.1, 0.5), ScaledExitTarget(0.05, 0.25)),
     )
-    assert reordered_stop.parameters == (("a", 2.0), ("z", 1.0))
+    assert tuple(target.return_threshold for target in reordered_scaled.scaled_targets) == (
+        0.05,
+        0.1,
+    )
     reordered_policy = PositionRulePolicy(
         "rules-1", "root", tuple(reversed(original.rules)), EvaluationMode.CLIENT
     )
     assert reordered_policy == original
 
 
+def test_scaled_exit_targets_are_typed_canonical_and_round_trip() -> None:
+    original = position_rule(
+        "scale",
+        PositionRuleType.SCALED_EXIT,
+        scaled_targets=(ScaledExitTarget(0.1, 0.5), ScaledExitTarget(0.05, 0.25)),
+    )
+
+    assert original.scaled_targets == (
+        ScaledExitTarget(0.05, 0.25),
+        ScaledExitTarget(0.1, 0.5),
+    )
+    assert PositionRuleDefinition.from_mapping(original.to_dict()) == original
+    assert (
+        ScaledExitTarget.from_mapping(original.scaled_targets[0].to_dict())
+        == (original.scaled_targets[0])
+    )
+
+
+@pytest.mark.parametrize(
+    ("values", "error", "message"),
+    [
+        ((0, 0.5), ValueError, "return_threshold"),
+        ((0.05, 0), ValueError, "exit_fraction"),
+        ((0.05, 1.1), ValueError, "exit_fraction"),
+        ((cast("Any", True), 0.5), TypeError, "return_threshold"),
+    ],
+)
+def test_scaled_exit_target_validation(
+    values: tuple[Any, Any], error: type[Exception], message: str
+) -> None:
+    with pytest.raises(error, match=message):
+        ScaledExitTarget(*values)
+
+
+def test_scaled_exit_target_mapping_reports_missing_fields() -> None:
+    with pytest.raises(ValueError, match="exit_fraction"):
+        ScaledExitTarget.from_mapping({"return_threshold": 0.05})
+
+
 def test_intent_contract_records_encode_as_json_and_restore() -> None:
-    rule = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS)
+    rule = position_rule("root", PositionRuleType.STOP_LOSS)
     rule_policy = PositionRulePolicy("rules-1", "root", (rule,), EvaluationMode.CLIENT)
     contracts = (
         (target(), CanonicalTargetIntent.from_mapping),
@@ -1075,7 +1136,7 @@ def test_intent_contract_records_encode_as_json_and_restore() -> None:
         (ExecutionPolicy.from_mapping, execution_policy().to_dict(), "policy_id"),
         (
             PositionRuleDefinition.from_mapping,
-            PositionRuleDefinition("stop", PositionRuleType.STOP_LOSS).to_dict(),
+            position_rule("stop", PositionRuleType.STOP_LOSS).to_dict(),
             "rule_id",
         ),
         (
@@ -1083,7 +1144,7 @@ def test_intent_contract_records_encode_as_json_and_restore() -> None:
             PositionRulePolicy(
                 "rules-1",
                 "stop",
-                (PositionRuleDefinition("stop", PositionRuleType.STOP_LOSS),),
+                (position_rule("stop", PositionRuleType.STOP_LOSS),),
                 EvaluationMode.CLIENT,
             ).to_dict(),
             "policy_id",
@@ -1148,7 +1209,7 @@ def test_position_rule_policy_mapping_rejects_malformed_rules(rules: object, mes
     record = PositionRulePolicy(
         "rules-1",
         "root",
-        (PositionRuleDefinition("root", PositionRuleType.STOP_LOSS),),
+        (position_rule("root", PositionRuleType.STOP_LOSS),),
         EvaluationMode.CLIENT,
     ).to_dict()
     record["rules"] = rules
@@ -1169,7 +1230,7 @@ def test_position_rule_policy_mapping_rejects_malformed_rules(rules: object, mes
 def test_position_rule_definition_mapping_rejects_malformed_collections(
     field: str, value: object, message: str
 ) -> None:
-    record = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS).to_dict()
+    record = position_rule("root", PositionRuleType.STOP_LOSS).to_dict()
     record[field] = value
 
     with pytest.raises(TypeError, match=message):
@@ -1177,17 +1238,37 @@ def test_position_rule_definition_mapping_rejects_malformed_collections(
 
 
 def test_position_rule_definition_mapping_requires_parameter_fields() -> None:
-    record = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS).to_dict()
+    record = position_rule("root", PositionRuleType.STOP_LOSS).to_dict()
     record["parameters"] = [{"name": "pct"}]
 
     with pytest.raises(ValueError, match="contain name and value"):
         PositionRuleDefinition.from_mapping(record)
 
 
+@pytest.mark.parametrize("malformed", ["targets", 1])
+def test_position_rule_definition_mapping_rejects_malformed_scaled_targets(
+    malformed: object,
+) -> None:
+    record = position_rule("scale", PositionRuleType.SCALED_EXIT).to_dict()
+    record["scaled_targets"] = malformed
+
+    with pytest.raises(TypeError, match="scaled_targets must be a sequence"):
+        PositionRuleDefinition.from_mapping(record)
+
+    record["scaled_targets"] = [malformed]
+    with pytest.raises(TypeError, match="each scaled target must be a mapping"):
+        PositionRuleDefinition.from_mapping(record)
+
+
 @pytest.mark.parametrize(
     ("factory", "message"),
     [
-        (lambda: PositionRuleDefinition("", PositionRuleType.STOP_LOSS), "rule_id"),
+        (
+            lambda: PositionRuleDefinition(
+                "", PositionRuleType.STOP_LOSS, parameters=(("pct", 0.05),)
+            ),
+            "rule_id",
+        ),
         (
             lambda: PositionRuleDefinition(
                 "rule", PositionRuleType.STOP_LOSS, parameters=cast("Any", 1)
@@ -1244,6 +1325,7 @@ def test_position_rule_definition_mapping_requires_parameter_fields() -> None:
             lambda: PositionRuleDefinition(
                 "rule",
                 PositionRuleType.STOP_LOSS,
+                parameters=(("pct", 0.05),),
                 children=("a",),
                 composition=RuleComposition.ALL,
             ),
@@ -1273,6 +1355,74 @@ def test_position_rule_definition_mapping_requires_parameter_fields() -> None:
             ),
             "parameters must be an iterable",
         ),
+        (
+            lambda: PositionRuleDefinition("rule", PositionRuleType.STOP_LOSS),
+            "parameters must be exactly: pct",
+        ),
+        (
+            lambda: PositionRuleDefinition(
+                "rule",
+                PositionRuleType.COMPOSITE,
+                parameters=(("pct", 0.05),),
+                children=("leaf",),
+                composition=RuleComposition.ALL,
+            ),
+            "parameters must be exactly: none",
+        ),
+        (
+            lambda: position_rule("rule", PositionRuleType.STOP_LOSS, parameters=(("pct", 0),)),
+            "pct rule parameter must be positive",
+        ),
+        (
+            lambda: position_rule(
+                "rule", PositionRuleType.TIME_EXIT, parameters=(("max_bars", 0),)
+            ),
+            "max_bars.*positive integer",
+        ),
+        (
+            lambda: position_rule(
+                "rule", PositionRuleType.TIME_EXIT, parameters=(("max_bars", 1.5),)
+            ),
+            "max_bars.*positive integer",
+        ),
+        (
+            lambda: position_rule("rule", PositionRuleType.SCALED_EXIT, scaled_targets=()),
+            "requires scaled_targets",
+        ),
+        (
+            lambda: position_rule(
+                "rule",
+                PositionRuleType.STOP_LOSS,
+                scaled_targets=(ScaledExitTarget(0.05, 0.25),),
+            ),
+            "only valid for scaled_exit",
+        ),
+        (
+            lambda: position_rule(
+                "rule",
+                PositionRuleType.SCALED_EXIT,
+                scaled_targets=(ScaledExitTarget(0.05, 0.25),) * 2,
+            ),
+            "thresholds must be unique",
+        ),
+        (
+            lambda: position_rule(
+                "rule", PositionRuleType.SCALED_EXIT, scaled_targets=cast("Any", "targets")
+            ),
+            "scaled_targets must be an iterable",
+        ),
+        (
+            lambda: position_rule(
+                "rule", PositionRuleType.SCALED_EXIT, scaled_targets=cast("Any", 1)
+            ),
+            "scaled_targets must be an iterable",
+        ),
+        (
+            lambda: position_rule(
+                "rule", PositionRuleType.SCALED_EXIT, scaled_targets=cast("Any", (object(),))
+            ),
+            "each scaled target",
+        ),
     ],
 )
 def test_position_rule_definition_validation(factory: Any, message: str) -> None:
@@ -1281,8 +1431,8 @@ def test_position_rule_definition_validation(factory: Any, message: str) -> None
 
 
 def test_position_rule_policy_validation() -> None:
-    rule = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS)
-    child_rule = PositionRuleDefinition("child", PositionRuleType.TAKE_PROFIT)
+    rule = position_rule("root", PositionRuleType.STOP_LOSS)
+    child_rule = position_rule("child", PositionRuleType.TAKE_PROFIT)
     for values, message in (
         ({"policy_id": ""}, "policy_id"),
         ({"root_rule_id": ""}, "root_rule_id"),
@@ -1340,14 +1490,14 @@ def test_position_rule_policy_rejects_cycles_and_unreachable_rules() -> None:
     with pytest.raises(ValueError, match="cycle"):
         PositionRulePolicy("rules-1", "root", (cyclic_root, cyclic_child), EvaluationMode.CLIENT)
 
-    root = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS)
-    unreachable = PositionRuleDefinition("unreachable", PositionRuleType.TAKE_PROFIT)
+    root = position_rule("root", PositionRuleType.STOP_LOSS)
+    unreachable = position_rule("unreachable", PositionRuleType.TAKE_PROFIT)
     with pytest.raises(ValueError, match="unreachable"):
         PositionRulePolicy("rules-1", "root", (root, unreachable), EvaluationMode.CLIENT)
 
 
 def test_position_rule_policy_accepts_shared_acyclic_children() -> None:
-    leaf = PositionRuleDefinition("leaf", PositionRuleType.STOP_LOSS)
+    leaf = position_rule("leaf", PositionRuleType.STOP_LOSS)
     left = PositionRuleDefinition(
         "left",
         PositionRuleType.COMPOSITE,
@@ -1393,7 +1543,7 @@ def test_position_rule_policy_accepts_shared_acyclic_children() -> None:
 
 
 def test_position_rule_policy_accepts_deep_acyclic_graph() -> None:
-    rules = [PositionRuleDefinition("leaf", PositionRuleType.STOP_LOSS)]
+    rules = [position_rule("leaf", PositionRuleType.STOP_LOSS)]
     child_id = "leaf"
     for index in range(1_200):
         rule_id = f"node-{index}"
@@ -1449,7 +1599,7 @@ def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
 
 
 def test_position_rule_state_and_target_must_match_policy() -> None:
-    stop = PositionRuleDefinition("stop", PositionRuleType.STOP_LOSS)
+    stop = position_rule("stop", PositionRuleType.STOP_LOSS)
     policy = PositionRulePolicy("rules-1", "stop", (stop,), EvaluationMode.CLIENT)
     state = rule_state()
     target_with_policy = target(position_rule_policy_id="rules-1")
@@ -1490,6 +1640,23 @@ def test_position_rule_state_and_target_must_match_policy() -> None:
     )
     validate_state_against_policy(composite_policy, replace(wrong_reason, rule_id="root"))
 
+    scaled = position_rule("scale", PositionRuleType.SCALED_EXIT)
+    scaled_policy = PositionRulePolicy("rules-1", "scale", (scaled,), EvaluationMode.CLIENT)
+    scaled_state = rule_state(
+        rule_id="scale",
+        activation=RuleActivation.TRIGGERED,
+        remaining_exit_quantity=8,
+        action=PositionActionType.EXIT_PARTIAL,
+        action_quantity=2,
+        exit_reason=ExitReason.SCALED_EXIT,
+    )
+    validate_state_against_policy(scaled_policy, scaled_state)
+    with pytest.raises(ValueError, match="incompatible.*scaled_exit"):
+        validate_state_against_policy(
+            scaled_policy,
+            replace(scaled_state, exit_reason=ExitReason.SIGNAL),
+        )
+
     with pytest.raises(ValueError, match="position_rule_policy_id"):
         validate_target_against_rule_policy(target(), policy)
     future_policy = replace(policy, policy_id="rules-1")
@@ -1499,7 +1666,7 @@ def test_position_rule_state_and_target_must_match_policy() -> None:
 
 
 def test_position_rule_policy_must_match_execution_behavior() -> None:
-    trailing = PositionRuleDefinition("trail", PositionRuleType.TRAILING_STOP)
+    trailing = position_rule("trail", PositionRuleType.TRAILING_STOP)
     client_rules = PositionRulePolicy("rules-1", "trail", (trailing,), EvaluationMode.CLIENT)
 
     validate_rule_policy_against_execution_policy(execution_policy(), client_rules)
@@ -1515,15 +1682,47 @@ def test_position_rule_policy_must_match_execution_behavior() -> None:
         execution_policy(trailing=ExecutionBehavior.BROKER_NATIVE), native_rules
     )
 
-    timed = PositionRuleDefinition("time", PositionRuleType.TIME_EXIT)
+    timed = position_rule("time", PositionRuleType.TIME_EXIT)
     timed_rules = PositionRulePolicy("rules-2", "time", (timed,), EvaluationMode.CLIENT)
-    validate_rule_policy_against_execution_policy(execution_policy(), timed_rules)
+    validate_rule_policy_against_execution_policy(
+        execution_policy(contingent=ExecutionBehavior.CLIENT), timed_rules
+    )
 
-    scaled = PositionRuleDefinition("scale", PositionRuleType.SCALED_EXIT)
+    scaled = position_rule("scale", PositionRuleType.SCALED_EXIT)
     scaled_rules = PositionRulePolicy("rules-3", "scale", (scaled,), EvaluationMode.CLIENT)
     validate_rule_policy_against_execution_policy(
-        execution_policy(allow_partial_fills=False), scaled_rules
+        execution_policy(
+            allow_partial_fills=False,
+            contingent=ExecutionBehavior.CLIENT,
+        ),
+        scaled_rules,
     )
+
+    composite = PositionRuleDefinition(
+        "root",
+        PositionRuleType.COMPOSITE,
+        children=("time",),
+        composition=RuleComposition.ALL,
+    )
+    for native_contingent_rules in (
+        replace(timed_rules, evaluation_mode=EvaluationMode.BROKER_NATIVE),
+        replace(scaled_rules, evaluation_mode=EvaluationMode.BROKER_NATIVE),
+        PositionRulePolicy(
+            "rules-4",
+            "root",
+            (composite, timed),
+            EvaluationMode.BROKER_NATIVE,
+        ),
+    ):
+        with pytest.raises(ValueError, match="requires broker-native contingent"):
+            validate_rule_policy_against_execution_policy(
+                execution_policy(contingent=ExecutionBehavior.CLIENT),
+                native_contingent_rules,
+            )
+        validate_rule_policy_against_execution_policy(
+            execution_policy(contingent=ExecutionBehavior.BROKER_NATIVE),
+            native_contingent_rules,
+        )
 
     mismatched_execution = execution_policy()
     object.__setattr__(mismatched_execution, "lifecycle_version", cast("Any", "other"))
