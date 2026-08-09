@@ -556,7 +556,9 @@ class CanonicalChildOrderIntent:
             )
         same_session = self.effective_session == self.decision_session
         if not same_session and eligibility is FillEligibility.NEXT_PHASE:
-            raise ValueError("cross-session opening fills require opening_auction eligibility")
+            raise ValueError(
+                "cross-session fills require opening_auction or close_auction eligibility"
+            )
         if not same_session and eligibility is FillEligibility.CURRENT_PHASE:
             raise ValueError("current_phase fill eligibility requires the decision session")
         if (
@@ -889,7 +891,11 @@ class PositionRuleDefinition:
             (_non_empty(name, "rule parameter name"), _finite(value, f"rule parameter {name}"))
             for name, value in raw_parameters
         )
-        children = tuple(_non_empty(child, "rule child") for child in self.children)
+        try:
+            raw_children = tuple(self.children)
+        except TypeError:
+            raise TypeError("children must be an iterable of rule ids") from None
+        children = tuple(_non_empty(child, "rule child") for child in raw_children)
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "children", children)
         if self.composition is not None:
@@ -1113,6 +1119,10 @@ class PositionRuleState:
             and self.action is not PositionActionType.HOLD
         ):
             raise ValueError("inactive position rules require hold action")
+        if self.action in {PositionActionType.EXIT_FULL, PositionActionType.EXIT_PARTIAL} and (
+            self.activation not in {RuleActivation.TRIGGERED, RuleActivation.COMPLETE}
+        ):
+            raise ValueError("exit actions require a triggered or complete position rule")
         if self.activation in {RuleActivation.TRIGGERED, RuleActivation.COMPLETE} and (
             self.exit_reason is ExitReason.NONE
         ):
@@ -1122,8 +1132,6 @@ class PositionRuleState:
         if self.action in {PositionActionType.HOLD, PositionActionType.ADJUST_STOP}:
             if self.exit_reason is not ExitReason.NONE:
                 raise ValueError("hold and adjust_stop actions require exit reason none")
-        elif self.exit_reason is ExitReason.NONE:
-            raise ValueError("exit action requires an exit reason")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible position-rule state."""

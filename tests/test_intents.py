@@ -945,7 +945,7 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
         )
 
     for eligibility_phase in (LifecyclePhase.INTRABAR, LifecyclePhase.CLOSE):
-        with pytest.raises(ValueError, match="opening_auction eligibility"):
+        with pytest.raises(ValueError, match="opening_auction or close_auction"):
             child(
                 decision_session=date(2026, 8, 10),
                 effective_session=date(2026, 8, 11),
@@ -1097,6 +1097,12 @@ def test_position_rule_definition_mapping_requires_parameter_fields() -> None:
                 "rule", PositionRuleType.STOP_LOSS, parameters=cast("Any", 1)
             ),
             "iterable",
+        ),
+        (
+            lambda: PositionRuleDefinition(
+                "rule", PositionRuleType.STOP_LOSS, children=cast("Any", 1)
+            ),
+            "children must be an iterable",
         ),
         (
             lambda: PositionRuleDefinition(
@@ -1319,10 +1325,17 @@ def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
         action=PositionActionType.EXIT_PARTIAL,
         exit_reason=ExitReason.STOP_LOSS,
     )
+    complete = rule_state(
+        activation=RuleActivation.COMPLETE,
+        remaining_exit_quantity=0,
+        action=PositionActionType.EXIT_FULL,
+        exit_reason=ExitReason.STOP_LOSS,
+    )
 
     assert PositionRuleState.from_mapping(hold.to_dict()) == hold
     assert PositionRuleState.from_mapping(adjustment.to_dict()) == adjustment
     assert PositionRuleState.from_mapping(exit_state.to_dict()) == exit_state
+    assert PositionRuleState.from_mapping(complete.to_dict()) == complete
 
 
 def test_position_rule_state_and_target_must_match_policy() -> None:
@@ -1354,6 +1367,17 @@ def test_position_rule_state_and_target_must_match_policy() -> None:
     )
     with pytest.raises(ValueError, match="incompatible.*stop_loss"):
         validate_state_against_policy(policy, wrong_reason)
+
+    composite = PositionRuleDefinition(
+        "root",
+        PositionRuleType.COMPOSITE,
+        children=("stop",),
+        composition=RuleComposition.FIRST_TRIGGERED,
+    )
+    composite_policy = PositionRulePolicy(
+        "rules-1", "root", (composite, stop), EvaluationMode.CLIENT
+    )
+    validate_state_against_policy(composite_policy, replace(wrong_reason, rule_id="root"))
 
     with pytest.raises(ValueError, match="position_rule_policy_id"):
         validate_target_against_rule_policy(target(), policy)
@@ -1421,6 +1445,15 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
         ),
         (
             {
+                "activation": RuleActivation.ACTIVE,
+                "action": PositionActionType.EXIT_FULL,
+                "exit_reason": ExitReason.STOP_LOSS,
+            },
+            ValueError,
+            "triggered or complete",
+        ),
+        (
+            {
                 "activation": RuleActivation.COMPLETE,
                 "action": PositionActionType.EXIT_FULL,
                 "exit_reason": ExitReason.SIGNAL,
@@ -1434,11 +1467,6 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
             {"action": PositionActionType.ADJUST_STOP, "exit_reason": ExitReason.STOP_LOSS},
             ValueError,
             "hold and adjust_stop",
-        ),
-        (
-            {"action": PositionActionType.EXIT_FULL, "exit_reason": ExitReason.NONE},
-            ValueError,
-            "requires an exit reason",
         ),
     ],
 )
