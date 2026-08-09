@@ -307,6 +307,13 @@ class MarketEvent:
         if self.gap is not None and not isinstance(self.gap, GapEvidence):
             raise TypeError("gap must be GapEvidence or None")
         _provider_sequence(self.provider_sequence, "provider_sequence")
+        if (
+            self.provider_sequence is not None
+            and self.gap is not None
+            and self.gap.current_sequence is not None
+            and self.gap.current_sequence != self.provider_sequence
+        ):
+            raise ValueError("gap current_sequence must match provider_sequence")
         metadata = _json_metadata(self.metadata)
         if not isinstance(metadata, dict):
             raise TypeError("metadata must be a mapping")
@@ -455,6 +462,8 @@ class LifecycleContract:
         raw_phases = value["phases"]
         if not isinstance(raw_phases, Sequence) or isinstance(raw_phases, str | bytes):
             raise TypeError("phases must be a sequence")
+        if any(not isinstance(raw, Mapping) for raw in raw_phases):
+            raise TypeError("each phase must be a mapping")
         phases = tuple(
             LifecyclePhaseSpec(
                 phase=LifecyclePhase(raw["phase"]),

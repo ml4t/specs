@@ -830,6 +830,10 @@ class PositionRuleDefinition:
     composition: RuleComposition | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.parameters, str | bytes):
+            raise TypeError("parameters must be an iterable of name-value pairs")
+        if isinstance(self.children, str | bytes):
+            raise TypeError("children must be an iterable of rule ids")
         object.__setattr__(self, "rule_type", PositionRuleType(self.rule_type))
         parameters = tuple(
             (_non_empty(name, "rule parameter name"), _finite(value, f"rule parameter {name}"))
@@ -899,7 +903,12 @@ class PositionRulePolicy:
     lifecycle_version: LifecycleVersion = LifecycleVersion.V1
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "rules", tuple(self.rules))
+        if isinstance(self.rules, str | bytes):
+            raise TypeError("rules must be an iterable of PositionRuleDefinition values")
+        rules = tuple(self.rules)
+        if any(not isinstance(rule, PositionRuleDefinition) for rule in rules):
+            raise TypeError("each rule must be a PositionRuleDefinition")
+        object.__setattr__(self, "rules", rules)
         object.__setattr__(self, "evaluation_mode", EvaluationMode(self.evaluation_mode))
         object.__setattr__(self, "policy_id", _non_empty(self.policy_id, "policy_id"))
         object.__setattr__(self, "root_rule_id", _non_empty(self.root_rule_id, "root_rule_id"))

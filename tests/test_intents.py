@@ -165,7 +165,7 @@ def test_generated_target_intents_round_trip(values: list[float], measure: Targe
     original = target(
         measure=measure,
         targets=tuple(
-            AssetTarget(f"ASSET-{index}", measure, value) for index, value in enumerate(values)
+            AssetTarget(f"ASSET-{index:03d}", measure, value) for index, value in enumerate(values)
         ),
     )
     restored = CanonicalTargetIntent.from_mapping(original.to_dict())
@@ -1040,6 +1040,21 @@ def test_position_rule_definition_mapping_rejects_malformed_collections(
             ),
             "unique",
         ),
+        (
+            lambda: PositionRuleDefinition(
+                "rule",
+                PositionRuleType.COMPOSITE,
+                children=cast("Any", "ab"),
+                composition=RuleComposition.ALL,
+            ),
+            "children must be an iterable",
+        ),
+        (
+            lambda: PositionRuleDefinition(
+                "rule", PositionRuleType.STOP_LOSS, parameters=cast("Any", "ab")
+            ),
+            "parameters must be an iterable",
+        ),
     ],
 )
 def test_position_rule_definition_validation(factory: Any, message: str) -> None:
@@ -1080,6 +1095,13 @@ def test_position_rule_policy_validation() -> None:
         arguments.update(values)
         with pytest.raises(ValueError, match=message):
             PositionRulePolicy(**cast("Any", arguments))
+
+    with pytest.raises(TypeError, match="rules must be an iterable"):
+        PositionRulePolicy("rules-1", "root", cast("Any", "root"), EvaluationMode.CLIENT)
+    with pytest.raises(TypeError, match="each rule"):
+        PositionRulePolicy(
+            "rules-1", "root", cast("Any", [{"rule_id": "root"}]), EvaluationMode.CLIENT
+        )
 
 
 def test_position_rule_policy_rejects_cycles_and_unreachable_rules() -> None:
@@ -1319,6 +1341,7 @@ def test_child_lineage_validation() -> None:
             validate_child_lineage(parent, invalid)
 
     mismatched_version = child()
+    # V1 is the only constructible version, so mutate a frozen fixture to test the future guard.
     object.__setattr__(mismatched_version, "lifecycle_version", cast("Any", "other"))
     with pytest.raises(ValueError, match="lifecycle version"):
         validate_child_lineage(parent, mismatched_version)

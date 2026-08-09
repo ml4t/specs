@@ -164,7 +164,7 @@ def test_contract_rejects_missing_or_misordered_phases() -> None:
         replace(LIFECYCLE_V1.phases[0], intents_allowed=cast("Any", 1))
 
 
-@pytest.mark.parametrize("raw", [[], "phases", 1])
+@pytest.mark.parametrize("raw", [[], "phases", 1, [["run_start", "on_start"]]])
 def test_contract_mapping_rejects_invalid_phase_collections(raw: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         LifecycleContract.from_mapping({"version": "1", "phases": raw})
@@ -326,6 +326,14 @@ def test_market_event_normalizes_string_enums() -> None:
             {"gap": cast("Any", {"detected": False, "reason": "not validated"})},
             TypeError,
             "GapEvidence",
+        ),
+        (
+            {
+                "gap": GapEvidence(True, "provider sequence skipped", 10, 12),
+                "provider_sequence": 7,
+            },
+            ValueError,
+            "must match",
         ),
     ],
 )
