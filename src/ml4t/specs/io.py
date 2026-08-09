@@ -61,7 +61,7 @@ def _open_temporary_file(destination: Path) -> tuple[TextIO, Path, int]:
         return temporary, temporary_path, creation_mode
 
 
-def _fsync_directory(path: Path) -> None:
+def _fsync_directory(path: Path) -> None:  # pragma: no cover - platform-specific implementation
     if os.name == "nt":  # pragma: no cover - Windows has no directory fsync
         return
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
