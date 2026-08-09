@@ -14,12 +14,10 @@ from ._validation import non_empty as _non_empty
 from ._validation import require_fields as _require_fields
 from ._validation import utc as _utc
 from .lifecycle import (
-    _REGISTERED_LIFECYCLE_CONTRACTS,
     InformationField,
-    LifecycleContract,
     LifecyclePhase,
     LifecycleVersion,
-    UnsupportedLifecycleVersionError,
+    lifecycle_contract,
     negotiate_lifecycle_version,
 )
 
@@ -190,15 +188,8 @@ class ExitReason(StrEnum):
     LIQUIDATION = "liquidation"
 
 
-def _lifecycle_contract(version: LifecycleVersion) -> LifecycleContract:
-    try:
-        return _REGISTERED_LIFECYCLE_CONTRACTS[version]
-    except KeyError as error:
-        raise UnsupportedLifecycleVersionError(version) from error
-
-
 def _intent_phase(phase: LifecyclePhase, version: LifecycleVersion) -> None:
-    if not _lifecycle_contract(version).phase_spec(phase).intents_allowed:
+    if not lifecycle_contract(version).phase_spec(phase).intents_allowed:
         raise ValueError(f"phase {phase.value!r} does not allow intents")
 
 
@@ -442,7 +433,7 @@ def _later_market_fill_phases(
 ) -> frozenset[LifecyclePhase]:
     if phase in {LifecyclePhase.INTRABAR, LifecyclePhase.MARKET_EVENT}:
         return frozenset({phase})
-    contract = _lifecycle_contract(version)
+    contract = lifecycle_contract(version)
     current_rank = contract.phase_spec(phase).causal_rank
     later_phases = {
         candidate
@@ -586,13 +577,13 @@ class CanonicalChildOrderIntent:
         if same_session:
             if eligibility is FillEligibility.CURRENT_PHASE:
                 consumed = frozenset(
-                    _lifecycle_contract(self.lifecycle_version)
+                    lifecycle_contract(self.lifecycle_version)
                     .phase_spec(self.eligibility_phase)
                     .current_phase_fill_conflicts
                 )
             else:
                 visible = set(
-                    _lifecycle_contract(self.lifecycle_version)
+                    lifecycle_contract(self.lifecycle_version)
                     .phase_spec(self.eligibility_phase)
                     .visible_fields
                 )
@@ -1531,7 +1522,7 @@ def validate_child_lineage(target: CanonicalTargetIntent, child: CanonicalChildO
         raise ValueError("child asset is absent from target")
     if child.decision_session != target.effective_session:
         raise ValueError("child decision session does not match target effective session")
-    contract = _lifecycle_contract(target.lifecycle_version)
+    contract = lifecycle_contract(target.lifecycle_version)
     target_rank = contract.phase_spec(target.effective_phase).causal_rank
     child_rank = contract.phase_spec(child.eligibility_phase).causal_rank
     if child_rank < target_rank:

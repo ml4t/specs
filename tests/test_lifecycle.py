@@ -29,11 +29,13 @@ from ml4t.specs import (
     QuotePayload,
     TradePayload,
     UnsupportedLifecycleVersionError,
+    lifecycle_contract,
     lifecycle_schema,
     negotiate_lifecycle_version,
     require_historical_strategy_compatibility,
     validate_event_against_phase,
 )
+from ml4t.specs import lifecycle as lifecycle_module
 
 EVENT_TIME = datetime(2026, 8, 8, 14, 30, tzinfo=UTC)
 RECEIPT_TIME = EVENT_TIME + timedelta(milliseconds=4)
@@ -72,6 +74,16 @@ def test_lifecycle_v1_is_complete_versioned_and_round_trips() -> None:
     assert LifecycleContract.from_mapping(LIFECYCLE_V1.to_dict()) == LIFECYCLE_V1
     assert lifecycle_schema()["properties"]["version"] == {"const": "1"}
     assert lifecycle_schema()["properties"]["phases"]["minItems"] == len(LifecyclePhase)
+    assert lifecycle_contract(LifecycleVersion.V1) == LIFECYCLE_V1
+
+
+def test_lifecycle_contract_rejects_an_unregistered_enum_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(lifecycle_module._REGISTERED_LIFECYCLE_PHASES, LifecycleVersion.V1)
+
+    with pytest.raises(UnsupportedLifecycleVersionError):
+        lifecycle_contract(LifecycleVersion.V1)
 
 
 def test_lifecycle_materializes_collections_and_normalizes_enums() -> None:

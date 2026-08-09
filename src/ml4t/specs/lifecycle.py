@@ -704,9 +704,15 @@ LIFECYCLE_V1 = LifecycleContract(
     phases=_LIFECYCLE_V1_PHASES,
 )
 
-_REGISTERED_LIFECYCLE_CONTRACTS = {
-    LifecycleVersion.V1: LIFECYCLE_V1,
-}
+
+def lifecycle_contract(version: LifecycleVersion | str) -> LifecycleContract:
+    """Return the canonical contract for a supported lifecycle version."""
+    negotiated = negotiate_lifecycle_version(version)
+    try:
+        phases = _REGISTERED_LIFECYCLE_PHASES[negotiated]
+    except KeyError as error:
+        raise UnsupportedLifecycleVersionError(negotiated) from error
+    return LifecycleContract(version=negotiated, phases=phases)
 
 
 def lifecycle_schema() -> dict[str, Any]:
@@ -798,6 +804,7 @@ __all__ = [
     "QuotePayload",
     "TradePayload",
     "UnsupportedLifecycleVersionError",
+    "lifecycle_contract",
     "lifecycle_schema",
     "negotiate_lifecycle_version",
     "require_historical_strategy_compatibility",

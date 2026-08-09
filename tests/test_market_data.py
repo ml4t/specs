@@ -322,5 +322,15 @@ def test_feed_spec_rejects_self_referential_metadata() -> None:
     source = SimpleNamespace()
     source.metadata = source
 
-    with pytest.raises(ValueError, match="itself"):
+    with pytest.raises(ValueError, match="reference cycles"):
         FeedSpec.from_object(source)
+
+
+def test_feed_spec_rejects_indirect_metadata_cycles() -> None:
+    first = SimpleNamespace()
+    second = SimpleNamespace()
+    first.metadata = second
+    second.metadata = first
+
+    with pytest.raises(ValueError, match="reference cycles"):
+        FeedSpec.from_object(first)

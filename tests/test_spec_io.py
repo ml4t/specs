@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 
 import pytest
 
@@ -115,6 +116,27 @@ def test_write_spec_payload_does_not_replace_valid_file_on_serialization_error(t
         write_spec_payload({"invalid": object()}, path)
 
     assert read_spec_payload(path) == {"artifact_id": "valid"}
+
+
+def test_write_spec_payload_preserves_existing_permissions(tmp_path) -> None:
+    path = tmp_path / "market_data.json"
+    path.write_text("{}\n")
+    path.chmod(0o640)
+
+    write_spec_payload({"artifact_id": "prices"}, path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_write_spec_payload_applies_umask_to_new_files(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(spec_io, "_new_file_mode", lambda: 0o600)
+    path = tmp_path / "market_data.json"
+
+    write_spec_payload({"artifact_id": "prices"}, path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_spec_io_supports_yml_and_empty_documents(tmp_path) -> None:

@@ -41,7 +41,6 @@ from ml4t.specs import (
     SessionPolicy,
     TargetMeasure,
     TimeInForce,
-    UnsupportedLifecycleVersionError,
     canonical_intent_fixture,
     compare_child_intents,
     compare_target_intents,
@@ -51,7 +50,6 @@ from ml4t.specs import (
     validate_state_against_policy,
     validate_target_against_rule_policy,
 )
-from ml4t.specs import intents as intents_module
 
 DECISION_TIME = datetime(2026, 8, 8, 13, 0, tzinfo=UTC)
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "canonical_intent_v1.json"
@@ -1042,15 +1040,6 @@ def test_close_decisions_support_next_session_auctions() -> None:
 
     assert next_open.effective_session == date(2026, 8, 11)
     assert next_close.effective_session == date(2026, 8, 11)
-
-
-def test_missing_registered_lifecycle_contract_raises_typed_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delitem(intents_module._REGISTERED_LIFECYCLE_CONTRACTS, LifecycleVersion.V1)
-
-    with pytest.raises(UnsupportedLifecycleVersionError):
-        intents_module._lifecycle_contract(LifecycleVersion.V1)
 
 
 def test_position_rule_definition_and_policy_round_trip() -> None:

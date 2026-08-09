@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import Lock
 from typing import Any
 
 import yaml
@@ -13,6 +16,7 @@ import yaml
 from .base import ArtifactSpec
 
 _SUPPORTED_SUFFIXES = frozenset({".json", ".yaml", ".yml"})
+_UMASK_LOCK = Lock()
 
 
 def _validated_suffix(path: Path) -> str:
@@ -27,6 +31,20 @@ def _normalize_mapping(data: Any) -> dict[str, Any]:
     if not isinstance(data, Mapping):
         raise ValueError("Spec payload must be a mapping")
     return {str(key): value for key, value in data.items()}
+
+
+def _new_file_mode() -> int:
+    with _UMASK_LOCK:
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+    return 0o666 & ~current_umask
+
+
+def _destination_mode(path: Path) -> int:
+    try:
+        return stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        return _new_file_mode()
 
 
 def read_spec_payload(path_or_mapping: str | Path | Mapping[Any, Any]) -> dict[str, Any]:
@@ -49,6 +67,7 @@ def write_spec_payload(payload: Mapping[Any, Any] | ArtifactSpec, path: str | Pa
         payload.to_dict() if isinstance(payload, ArtifactSpec) else _normalize_mapping(payload)
     )
     dest.parent.mkdir(parents=True, exist_ok=True)
+    destination_mode = _destination_mode(dest)
     temporary_path: Path | None = None
     try:
         with NamedTemporaryFile(
@@ -64,6 +83,7 @@ def write_spec_payload(payload: Mapping[Any, Any] | ArtifactSpec, path: str | Pa
                 temporary.write("\n")
             else:
                 yaml.safe_dump(normalized, temporary, sort_keys=False)
+        temporary_path.chmod(destination_mode)
         temporary_path.replace(dest)
     except Exception:
         if temporary_path is not None:
