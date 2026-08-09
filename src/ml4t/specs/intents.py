@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -214,7 +214,7 @@ class AssetTarget:
 
 @dataclass(frozen=True, slots=True)
 class CanonicalTargetIntent:
-    """Engine-independent strategy decision before child-order construction."""
+    """Strategy decision; effective session may trail its UTC decision date by one day."""
 
     intent_id: str
     decision_time: datetime
@@ -253,6 +253,8 @@ class CanonicalTargetIntent:
             self.effective_session, datetime
         ):
             raise TypeError("effective_session must be a date")
+        if self.effective_session < self.decision_time.date() - timedelta(days=1):
+            raise ValueError("effective_session is stale relative to decision_time")
         _intent_phase(self.effective_phase)
         if isinstance(self.targets, str | bytes):
             raise TypeError("targets must be an iterable of AssetTarget values")
@@ -442,6 +444,8 @@ class CanonicalChildOrderIntent:
             self.effective_session, datetime
         ):
             raise TypeError("effective_session must be a date")
+        if not isinstance(self.parameters, OrderParameters):
+            raise TypeError("parameters must be OrderParameters")
         _intent_phase(self.eligibility_phase)
         if len(self.capabilities) != len(set(self.capabilities)):
             raise ValueError("capabilities must be unique")
@@ -581,6 +585,15 @@ class CanonicalChildOrderIntent:
         )
 
 
+_MARKET_FILL_PHASES = frozenset(
+    {
+        LifecyclePhase.OPENING_AUCTION,
+        LifecyclePhase.INTRABAR,
+        LifecyclePhase.MARKET_EVENT,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionPolicy:
     """Recorded execution assumptions used by an engine or venue."""
@@ -617,11 +630,7 @@ class ExecutionPolicy:
             object.__setattr__(self, name, ExecutionBehavior(getattr(self, name)))
         object.__setattr__(self, "bar_path", BarPathPolicy(self.bar_path))
         object.__setattr__(self, "policy_id", _non_empty(self.policy_id, "policy_id"))
-        if self.market_fill_phase not in {
-            LifecyclePhase.OPENING_AUCTION,
-            LifecyclePhase.INTRABAR,
-            LifecyclePhase.MARKET_EVENT,
-        }:
+        if self.market_fill_phase not in _MARKET_FILL_PHASES:
             raise ValueError(f"phase {self.market_fill_phase.value!r} does not allow market fills")
         for name in ("fee_bps", "slippage_bps", "spread_bps", "impact_bps", "latency_ms"):
             if _finite(getattr(self, name), name) < 0:
@@ -723,13 +732,28 @@ def validate_child_against_policy(
     }:
         fill_phase = child.eligibility_phase
         if child.fill_eligibility is FillEligibility.NEXT_PHASE:
-            phases = tuple(LifecyclePhase)
-            phase_index = phases.index(fill_phase)
-            fill_phase = phases[phase_index + 1]
-        if fill_phase is not policy.market_fill_phase:
+            current_rank = LIFECYCLE_V1.phase_spec(fill_phase).causal_rank
+            later_phases = {
+                phase
+                for phase in _MARKET_FILL_PHASES
+                if LIFECYCLE_V1.phase_spec(phase).causal_rank > current_rank
+            }
+            if not later_phases:
+                raise ValueError(
+                    f"no later market fill phase follows {child.eligibility_phase.value}"
+                )
+            next_rank = min(LIFECYCLE_V1.phase_spec(phase).causal_rank for phase in later_phases)
+            valid_fill_phases = {
+                phase
+                for phase in later_phases
+                if LIFECYCLE_V1.phase_spec(phase).causal_rank == next_rank
+            }
+        else:
+            valid_fill_phases = {fill_phase}
+        if policy.market_fill_phase not in valid_fill_phases:
+            phases = ", ".join(sorted(phase.value for phase in valid_fill_phases))
             raise ValueError(
-                f"market order fills in {fill_phase.value}, but policy requires "
-                f"{policy.market_fill_phase.value}"
+                f"market order fills in {phases}, but policy requires {policy.market_fill_phase.value}"
             )
 
 

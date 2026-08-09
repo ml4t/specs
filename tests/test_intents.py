@@ -220,6 +220,15 @@ def test_target_materializes_single_pass_iterables_before_validation() -> None:
         ({"information_cutoff": DECISION_TIME + timedelta(seconds=1)}, ValueError, "must not"),
         ({"effective_session": DECISION_TIME}, TypeError, "date"),
         ({"effective_session": cast("Any", "2026-08-10")}, TypeError, "date"),
+        (
+            {
+                "decision_time": datetime(2026, 8, 20, tzinfo=UTC),
+                "information_cutoff": datetime(2026, 8, 20, tzinfo=UTC),
+                "effective_session": date(2026, 8, 10),
+            },
+            ValueError,
+            "stale",
+        ),
         ({"effective_phase": cast("Any", "run_start")}, ValueError, "does not allow"),
         ({"targets": ()}, ValueError, "must not be empty"),
         (
@@ -406,6 +415,7 @@ def test_child_capability_order_is_canonical() -> None:
         ({"quantity": cast("Any", True)}, TypeError, "number"),
         ({"effective_session": DECISION_TIME}, TypeError, "effective_session"),
         ({"effective_session": cast("Any", "2026-08-10")}, TypeError, "effective_session"),
+        ({"parameters": cast("Any", {"limit_price": 100})}, TypeError, "OrderParameters"),
         ({"eligibility_phase": LifecyclePhase.RUN_END}, ValueError, "does not allow"),
         (
             {"order_type": OrderType.LIMIT, "parameters": OrderParameters(), "capabilities": ()},
@@ -758,13 +768,35 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
         time_in_force=TimeInForce.DAY,
         capabilities=(),
     )
+    later_rank_child = child(
+        eligibility_phase=LifecyclePhase.OPENING_AUCTION,
+        fill_eligibility=FillEligibility.NEXT_PHASE,
+        time_in_force=TimeInForce.DAY,
+        capabilities=(),
+    )
 
     validate_child_against_policy(
         execution_policy(market_fill_phase=LifecyclePhase.INTRABAR), current_phase_child
     )
     validate_child_against_policy(execution_policy(), next_phase_child)
+    validate_child_against_policy(
+        execution_policy(market_fill_phase=LifecyclePhase.MARKET_EVENT),
+        later_rank_child,
+    )
     with pytest.raises(ValueError, match="intrabar.*opening_auction"):
         validate_child_against_policy(execution_policy(), current_phase_child)
+    for eligibility_phase in (LifecyclePhase.MARKET_EVENT, LifecyclePhase.CLOSE):
+        no_successor = child(
+            eligibility_phase=eligibility_phase,
+            fill_eligibility=FillEligibility.NEXT_PHASE,
+            time_in_force=TimeInForce.DAY,
+            capabilities=(),
+        )
+        with pytest.raises(ValueError, match="no later market fill phase"):
+            validate_child_against_policy(
+                execution_policy(market_fill_phase=LifecyclePhase.MARKET_EVENT),
+                no_successor,
+            )
 
 
 def test_position_rule_definition_and_policy_round_trip() -> None:
