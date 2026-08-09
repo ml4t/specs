@@ -363,6 +363,32 @@ _FILL_ELIGIBILITY_CAPABILITY: dict[FillEligibility, ExecutionCapability | None] 
     FillEligibility.CLOSE_AUCTION: ExecutionCapability.CLOSE_AUCTION,
 }
 
+_FILL_INFORMATION_FIELDS: dict[FillEligibility, frozenset[InformationField]] = {
+    FillEligibility.CURRENT_PHASE: frozenset(
+        {
+            InformationField.OFFICIAL_OPEN,
+            InformationField.CURRENT_OPEN,
+            InformationField.CURRENT_HIGH,
+            InformationField.CURRENT_LOW,
+            InformationField.CURRENT_CLOSE,
+        }
+    ),
+    FillEligibility.NEXT_PHASE: frozenset(),
+    FillEligibility.OPENING_AUCTION: frozenset(
+        {InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN}
+    ),
+    FillEligibility.CLOSE_AUCTION: frozenset({InformationField.CURRENT_CLOSE}),
+}
+
+_ALLOWED_PARAMETERS: dict[OrderType, frozenset[str]] = {
+    OrderType.MARKET: frozenset(),
+    OrderType.LIMIT: frozenset({"limit_price"}),
+    OrderType.STOP: frozenset({"stop_price"}),
+    OrderType.STOP_LIMIT: frozenset({"limit_price", "stop_price"}),
+    OrderType.TRAILING_STOP: frozenset({"trail_amount", "trail_percent"}),
+    OrderType.MOC: frozenset(),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class CanonicalChildOrderIntent:
@@ -419,12 +445,7 @@ class CanonicalChildOrderIntent:
         if missing:
             required = ", ".join(sorted(capability.value for capability in missing))
             raise ValueError(f"child order requires capability: {required}")
-        if (
-            self.fill_eligibility is FillEligibility.CURRENT_PHASE
-            and InformationField.CURRENT_CLOSE
-            in LIFECYCLE_V1.phase_spec(self.eligibility_phase).visible_fields
-        ):
-            raise ValueError("current-phase fills cannot use a phase that observes current_close")
+        self._validate_eligibility()
         object.__setattr__(
             self,
             "capabilities",
@@ -437,8 +458,40 @@ class CanonicalChildOrderIntent:
             negotiate_lifecycle_version(self.lifecycle_version, self.eligibility_phase),
         )
 
+    def _validate_eligibility(self) -> None:
+        eligibility = self.fill_eligibility
+        time_in_force = self.time_in_force
+        if time_in_force is TimeInForce.OPG and eligibility is not FillEligibility.OPENING_AUCTION:
+            raise ValueError("opg time in force requires opening_auction fill eligibility")
+        if time_in_force is TimeInForce.CLS and eligibility is not FillEligibility.CLOSE_AUCTION:
+            raise ValueError("cls time in force requires close_auction fill eligibility")
+        if self.order_type is OrderType.MOC and eligibility is not FillEligibility.CLOSE_AUCTION:
+            raise ValueError("moc order requires close_auction fill eligibility")
+        if time_in_force in {TimeInForce.IOC, TimeInForce.FOK} and (
+            eligibility is not FillEligibility.CURRENT_PHASE
+        ):
+            raise ValueError(
+                f"{time_in_force.value} time in force requires current_phase eligibility"
+            )
+        visible = set(LIFECYCLE_V1.phase_spec(self.eligibility_phase).visible_fields)
+        consumed = visible & _FILL_INFORMATION_FIELDS[eligibility]
+        if consumed:
+            fields = ", ".join(sorted(field.value for field in consumed))
+            raise ValueError(
+                f"fill eligibility would consume already visible information: {fields}"
+            )
+
     def _validate_parameters(self) -> None:
         parameters = self.parameters
+        supplied = {
+            name
+            for name in ("limit_price", "stop_price", "trail_amount", "trail_percent")
+            if getattr(parameters, name) is not None
+        }
+        irrelevant = supplied - _ALLOWED_PARAMETERS[self.order_type]
+        if irrelevant:
+            names = ", ".join(sorted(irrelevant))
+            raise ValueError(f"{self.order_type.value} order does not allow parameters: {names}")
         if self.order_type is OrderType.LIMIT and parameters.limit_price is None:
             raise ValueError("limit order requires limit_price")
         if self.order_type is OrderType.STOP and parameters.stop_price is None:
@@ -601,6 +654,44 @@ class ExecutionPolicy:
             allow_partial_fills=bool(value["allow_partial_fills"]),
             bar_path=BarPathPolicy(value["bar_path"]),
         )
+
+
+_ORDER_POLICY_FIELD: dict[OrderType, str | None] = {
+    OrderType.MARKET: None,
+    OrderType.LIMIT: "limit",
+    OrderType.STOP: "stop",
+    OrderType.STOP_LIMIT: "stop_limit",
+    OrderType.TRAILING_STOP: "trailing",
+    OrderType.MOC: "moc",
+}
+
+_FILL_POLICY_FIELD: dict[FillEligibility, str | None] = {
+    FillEligibility.CURRENT_PHASE: None,
+    FillEligibility.NEXT_PHASE: None,
+    FillEligibility.OPENING_AUCTION: "opening_auction",
+    FillEligibility.CLOSE_AUCTION: "moc",
+}
+
+
+def validate_child_against_policy(
+    policy: ExecutionPolicy, child: CanonicalChildOrderIntent
+) -> None:
+    """Reject a child order that requires behavior disabled by its execution policy."""
+    fields = {
+        field
+        for field in (
+            _ORDER_POLICY_FIELD[child.order_type],
+            _FILL_POLICY_FIELD[child.fill_eligibility],
+        )
+        if field is not None
+    }
+    disabled = sorted(
+        field for field in fields if getattr(policy, field) is ExecutionBehavior.DISABLED
+    )
+    if disabled:
+        raise ValueError(f"execution policy disables required behavior: {', '.join(disabled)}")
+    if ExecutionCapability.PARTIAL_FILL in child.capabilities and not policy.allow_partial_fills:
+        raise ValueError("execution policy disables partial fills")
 
 
 @dataclass(frozen=True, slots=True)
@@ -948,4 +1039,5 @@ __all__ = [
     "compare_child_intents",
     "compare_target_intents",
     "validate_child_lineage",
+    "validate_child_against_policy",
 ]

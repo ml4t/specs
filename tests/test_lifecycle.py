@@ -181,6 +181,8 @@ def test_historical_strategy_compatibility_is_explicit() -> None:
     assert captured.value.callback == "on_historical_data"
     assert captured.value.required_phase is LifecyclePhase.CAUSAL_INITIALIZATION
     assert captured.value.supported_versions == ("1",)
+    with pytest.raises(TypeError, match="sequence"):
+        require_historical_strategy_compatibility("Legacy", "legacy_on_historical_data_hook")
 
 
 @pytest.mark.parametrize("kind", list(MarketEventKind))
@@ -229,6 +231,43 @@ def test_market_event_accepts_gap_evidence_without_sequence() -> None:
             "current_sequence": None,
         }
     ) == GapEvidence(False, "provider has no sequence")
+
+    integer_gap = GapEvidence(True, "provider sequence skipped", 10, 12)
+    assert (
+        GapEvidence.from_mapping(
+            {
+                "detected": True,
+                "reason": "provider sequence skipped",
+                "previous_sequence": 10,
+                "current_sequence": 12,
+            }
+        )
+        == integer_gap
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error", "message"),
+    [
+        ({"detected": True}, ValueError, "requires previous_sequence"),
+        ({"previous_sequence": True}, TypeError, "previous_sequence"),
+        ({"current_sequence": 1.5}, TypeError, "current_sequence"),
+        ({"previous_sequence": ""}, ValueError, "must not be empty"),
+        ({"current_sequence": -1}, ValueError, "non-negative"),
+    ],
+)
+def test_gap_evidence_validates_sequence_identity(
+    overrides: dict[str, Any], error: type[Exception], message: str
+) -> None:
+    values: dict[str, Any] = {
+        "detected": False,
+        "reason": "provider sequence state",
+        "previous_sequence": None,
+        "current_sequence": None,
+    }
+    values.update(overrides)
+    with pytest.raises(error, match=message):
+        GapEvidence(**values)
 
 
 def test_market_event_normalizes_string_enums() -> None:

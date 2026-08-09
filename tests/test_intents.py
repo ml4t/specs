@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -41,10 +43,12 @@ from ml4t.specs import (
     canonical_intent_fixture,
     compare_child_intents,
     compare_target_intents,
+    validate_child_against_policy,
     validate_child_lineage,
 )
 
 DECISION_TIME = datetime(2026, 8, 8, 13, 0, tzinfo=UTC)
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "canonical_intent_v1.json"
 
 
 def target(**overrides: Any) -> CanonicalTargetIntent:
@@ -137,6 +141,7 @@ def rule_state(**overrides: Any) -> PositionRuleState:
 
 def test_golden_fixture_loads_unchanged_and_round_trips() -> None:
     fixture = canonical_intent_fixture()
+    assert fixture == json.loads(FIXTURE_PATH.read_text())
     restored_target = CanonicalTargetIntent.from_mapping(fixture["target"])
     restored_child = CanonicalChildOrderIntent.from_mapping(fixture["child"])
 
@@ -303,11 +308,15 @@ def test_child_order_types_round_trip(
     parameters: OrderParameters,
     capabilities: tuple[ExecutionCapability, ...],
 ) -> None:
+    eligibility = (
+        FillEligibility.CLOSE_AUCTION if order_type is OrderType.MOC else FillEligibility.NEXT_PHASE
+    )
+    time_in_force = TimeInForce.CLS if order_type is OrderType.MOC else TimeInForce.DAY
     original = child(
         order_type=order_type,
         parameters=parameters,
-        fill_eligibility=FillEligibility.NEXT_PHASE,
-        time_in_force=TimeInForce.DAY,
+        fill_eligibility=eligibility,
+        time_in_force=time_in_force,
         capabilities=capabilities,
     )
 
@@ -317,8 +326,20 @@ def test_child_order_types_round_trip(
 @pytest.mark.parametrize(
     ("overrides", "capability"),
     [
-        ({"time_in_force": TimeInForce.OPG}, ExecutionCapability.OPENING_AUCTION),
-        ({"time_in_force": TimeInForce.CLS}, ExecutionCapability.CLOSE_AUCTION),
+        (
+            {
+                "time_in_force": TimeInForce.OPG,
+                "fill_eligibility": FillEligibility.OPENING_AUCTION,
+            },
+            ExecutionCapability.OPENING_AUCTION,
+        ),
+        (
+            {
+                "time_in_force": TimeInForce.CLS,
+                "fill_eligibility": FillEligibility.CLOSE_AUCTION,
+            },
+            ExecutionCapability.CLOSE_AUCTION,
+        ),
         (
             {"fill_eligibility": FillEligibility.OPENING_AUCTION},
             ExecutionCapability.OPENING_AUCTION,
@@ -405,6 +426,37 @@ def test_child_capability_order_is_canonical() -> None:
         ),
         (
             {
+                "eligibility_phase": LifecyclePhase.CLOSE,
+                "order_type": OrderType.MOC,
+                "fill_eligibility": FillEligibility.CLOSE_AUCTION,
+                "time_in_force": TimeInForce.CLS,
+                "capabilities": (ExecutionCapability.CLOSE_AUCTION,),
+            },
+            ValueError,
+            "current_close",
+        ),
+        (
+            {
+                "eligibility_phase": LifecyclePhase.OPENING_AUCTION,
+                "fill_eligibility": FillEligibility.OPENING_AUCTION,
+                "time_in_force": TimeInForce.OPG,
+                "capabilities": (ExecutionCapability.OPENING_AUCTION,),
+            },
+            ValueError,
+            "current_open",
+        ),
+        (
+            {
+                "eligibility_phase": LifecyclePhase.OPENING_AUCTION,
+                "fill_eligibility": FillEligibility.CURRENT_PHASE,
+                "time_in_force": TimeInForce.DAY,
+                "capabilities": (),
+            },
+            ValueError,
+            "current_open",
+        ),
+        (
+            {
                 "order_type": OrderType.LIMIT,
                 "parameters": OrderParameters(),
                 "capabilities": (
@@ -473,6 +525,93 @@ def test_child_rejection_is_atomic(
     with pytest.raises(error, match=message):
         registry.append(child(**overrides))
     assert registry == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        (
+            {
+                "fill_eligibility": FillEligibility.NEXT_PHASE,
+                "time_in_force": TimeInForce.OPG,
+                "capabilities": (ExecutionCapability.OPENING_AUCTION,),
+            },
+            "opg time in force requires opening_auction",
+        ),
+        (
+            {
+                "order_type": OrderType.MOC,
+                "fill_eligibility": FillEligibility.OPENING_AUCTION,
+                "time_in_force": TimeInForce.OPG,
+                "capabilities": (
+                    ExecutionCapability.CLOSE_AUCTION,
+                    ExecutionCapability.OPENING_AUCTION,
+                ),
+            },
+            "moc order requires close_auction",
+        ),
+        (
+            {
+                "fill_eligibility": FillEligibility.OPENING_AUCTION,
+                "time_in_force": TimeInForce.CLS,
+                "capabilities": (
+                    ExecutionCapability.CLOSE_AUCTION,
+                    ExecutionCapability.OPENING_AUCTION,
+                ),
+            },
+            "cls time in force requires close_auction",
+        ),
+        (
+            {
+                "fill_eligibility": FillEligibility.NEXT_PHASE,
+                "time_in_force": TimeInForce.IOC,
+                "capabilities": (),
+            },
+            "ioc time in force requires current_phase",
+        ),
+        (
+            {
+                "fill_eligibility": FillEligibility.NEXT_PHASE,
+                "time_in_force": TimeInForce.FOK,
+                "capabilities": (),
+            },
+            "fok time in force requires current_phase",
+        ),
+    ],
+)
+def test_child_rejects_contradictory_execution_fields(
+    overrides: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        child(**overrides)
+
+
+@pytest.mark.parametrize(
+    ("order_type", "parameters", "capabilities", "irrelevant"),
+    [
+        (OrderType.MARKET, OrderParameters(stop_price=99), (), "stop_price"),
+        (
+            OrderType.LIMIT,
+            OrderParameters(limit_price=100, trail_percent=0.5),
+            (ExecutionCapability.LIMIT,),
+            "trail_percent",
+        ),
+    ],
+)
+def test_child_rejects_irrelevant_order_parameters(
+    order_type: OrderType,
+    parameters: OrderParameters,
+    capabilities: tuple[ExecutionCapability, ...],
+    irrelevant: str,
+) -> None:
+    with pytest.raises(ValueError, match=irrelevant):
+        child(
+            order_type=order_type,
+            parameters=parameters,
+            fill_eligibility=FillEligibility.NEXT_PHASE,
+            time_in_force=TimeInForce.DAY,
+            capabilities=capabilities,
+        )
 
 
 @pytest.mark.parametrize(
@@ -552,6 +691,29 @@ def test_execution_policy_rejects_unknown_recorded_policy() -> None:
     record["bar_path"] = "guess"
     with pytest.raises(ValueError, match="guess"):
         ExecutionPolicy.from_mapping(record)
+
+
+def test_child_must_be_supported_by_execution_policy() -> None:
+    limit_child = child(
+        order_type=OrderType.LIMIT,
+        parameters=OrderParameters(limit_price=100),
+        capabilities=(ExecutionCapability.LIMIT, ExecutionCapability.OPENING_AUCTION),
+    )
+    partial_child = child(
+        capabilities=(ExecutionCapability.OPENING_AUCTION, ExecutionCapability.PARTIAL_FILL)
+    )
+
+    validate_child_against_policy(execution_policy(), limit_child)
+    with pytest.raises(ValueError, match="limit"):
+        validate_child_against_policy(
+            execution_policy(limit=ExecutionBehavior.DISABLED), limit_child
+        )
+    with pytest.raises(ValueError, match="opening_auction"):
+        validate_child_against_policy(
+            execution_policy(opening_auction=ExecutionBehavior.DISABLED), child()
+        )
+    with pytest.raises(ValueError, match="partial fills"):
+        validate_child_against_policy(execution_policy(allow_partial_fills=False), partial_child)
 
 
 def test_position_rule_definition_and_policy_round_trip() -> None:

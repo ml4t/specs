@@ -39,6 +39,7 @@ from .intents import (
     canonical_intent_fixture,
     compare_child_intents,
     compare_target_intents,
+    validate_child_against_policy,
     validate_child_lineage,
 )
 from .io import read_spec_payload, write_spec_payload
@@ -145,6 +146,7 @@ __all__ = [
     "read_spec_payload",
     "require_historical_strategy_compatibility",
     "serialize_artifact_value",
+    "validate_child_against_policy",
     "validate_child_lineage",
     "write_spec_payload",
 ]

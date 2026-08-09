@@ -141,17 +141,31 @@ def _freeze_json(value: object) -> object:
     return value
 
 
+def _provider_sequence(value: object, name: str) -> str | int | None:
+    if isinstance(value, bool) or not isinstance(value, str | int | None):
+        raise TypeError(f"{name} must be a string, integer, or None")
+    if isinstance(value, str) and not value:
+        raise ValueError(f"{name} must not be empty")
+    if isinstance(value, int) and value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class GapEvidence:
     """Evidence that a provider sequence is continuous or has a known gap."""
 
     detected: bool
     reason: str
-    previous_sequence: str | None = None
-    current_sequence: str | None = None
+    previous_sequence: str | int | None = None
+    current_sequence: str | int | None = None
 
     def __post_init__(self) -> None:
         _non_empty(self.reason, "gap reason")
+        _provider_sequence(self.previous_sequence, "previous_sequence")
+        _provider_sequence(self.current_sequence, "current_sequence")
+        if self.detected and (self.previous_sequence is None or self.current_sequence is None):
+            raise ValueError("detected gap requires previous_sequence and current_sequence")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> GapEvidence:
@@ -275,14 +289,7 @@ class MarketEvent:
             raise TypeError(f"{kind.value} event requires {_PAYLOAD_TYPES[kind].__name__}")
         if self.provider_sequence is None and self.gap is None:
             raise ValueError("provider_sequence or gap evidence is required")
-        if isinstance(self.provider_sequence, bool) or not isinstance(
-            self.provider_sequence, str | int | None
-        ):
-            raise TypeError("provider_sequence must be a string, integer, or None")
-        if isinstance(self.provider_sequence, str) and not self.provider_sequence:
-            raise ValueError("provider_sequence must not be empty")
-        if isinstance(self.provider_sequence, int) and self.provider_sequence < 0:
-            raise ValueError("provider_sequence must be non-negative")
+        _provider_sequence(self.provider_sequence, "provider_sequence")
         metadata = _json_metadata(self.metadata)
         if not isinstance(metadata, dict):
             raise TypeError("metadata must be a mapping")
@@ -456,6 +463,8 @@ def negotiate_lifecycle_version(
 
 def require_historical_strategy_compatibility(strategy: str, callback_names: Sequence[str]) -> None:
     """Reject callbacks that expose non-causal historical initialization."""
+    if isinstance(callback_names, str | bytes):
+        raise TypeError("callback_names must be a sequence of callback names")
     if "on_historical_data" in callback_names:
         raise HistoricalStrategyCompatibilityError(
             strategy,

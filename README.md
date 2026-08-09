@@ -110,7 +110,8 @@ engines must align those fields first. Auction fill eligibility and auction time
 require the matching declared capability. A decision that observes a completed close cannot fill
 at that same close. Instrument prices may be negative, while quantities, trailing amounts, and
 trailing percentages remain positive. Favorable and adverse excursions are signed fractional
-returns.
+returns. Use `validate_child_against_policy()` before submission to reject child orders that need
+execution behavior disabled by the selected policy.
 
 ## Read And Write Spec Payloads
 
