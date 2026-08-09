@@ -160,6 +160,8 @@ def test_contract_rejects_missing_or_misordered_phases() -> None:
         replace(LIFECYCLE_V1.phases[0], causal_rank=-1)
     with pytest.raises(TypeError, match="integer"):
         replace(LIFECYCLE_V1.phases[0], causal_rank=cast("Any", True))
+    with pytest.raises(TypeError, match="intents_allowed"):
+        replace(LIFECYCLE_V1.phases[0], intents_allowed=cast("Any", 1))
 
 
 @pytest.mark.parametrize("raw", [[], "phases", 1])
@@ -263,6 +265,7 @@ def test_market_event_accepts_gap_evidence_without_sequence() -> None:
     ("overrides", "error", "message"),
     [
         ({"detected": True}, ValueError, "requires previous_sequence"),
+        ({"detected": cast("Any", 1)}, TypeError, "detected must be a bool"),
         ({"previous_sequence": True}, TypeError, "previous_sequence"),
         ({"current_sequence": 1.5}, TypeError, "current_sequence"),
         ({"previous_sequence": ""}, ValueError, "must not be empty"),

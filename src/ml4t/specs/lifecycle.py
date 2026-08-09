@@ -162,6 +162,8 @@ class GapEvidence:
     current_sequence: str | int | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.detected, bool):
+            raise TypeError("detected must be a bool")
         object.__setattr__(self, "reason", _non_empty(self.reason, "gap reason"))
         _provider_sequence(self.previous_sequence, "previous_sequence")
         _provider_sequence(self.current_sequence, "current_sequence")
@@ -171,7 +173,7 @@ class GapEvidence:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> GapEvidence:
         return cls(
-            detected=bool(value["detected"]),
+            detected=value["detected"],
             reason=value["reason"],
             previous_sequence=value.get("previous_sequence"),
             current_sequence=value.get("current_sequence"),
@@ -379,6 +381,8 @@ class LifecyclePhaseSpec:
             "exception_semantics",
             CallbackExceptionSemantics(self.exception_semantics),
         )
+        if not isinstance(self.intents_allowed, bool):
+            raise TypeError("intents_allowed must be a bool")
         object.__setattr__(self, "callback", _non_empty(self.callback, "callback"))
         if isinstance(self.causal_rank, bool) or not isinstance(self.causal_rank, int):
             raise TypeError("causal_rank must be an integer")
@@ -456,7 +460,7 @@ class LifecycleContract:
                 phase=LifecyclePhase(raw["phase"]),
                 callback=raw["callback"],
                 visible_fields=tuple(InformationField(field) for field in raw["visible_fields"]),
-                intents_allowed=bool(raw["intents_allowed"]),
+                intents_allowed=raw["intents_allowed"],
                 cardinality=CallbackCardinality(raw["cardinality"]),
                 exception_semantics=CallbackExceptionSemantics(raw["exception_semantics"]),
                 causal_rank=raw["causal_rank"],

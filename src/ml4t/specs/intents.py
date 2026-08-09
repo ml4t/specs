@@ -443,6 +443,7 @@ class CanonicalChildOrderIntent:
     quantity: float
     order_type: OrderType
     parameters: OrderParameters
+    decision_session: date
     effective_session: date
     eligibility_phase: LifecyclePhase
     fill_eligibility: FillEligibility
@@ -460,6 +461,8 @@ class CanonicalChildOrderIntent:
         object.__setattr__(self, "time_in_force", TimeInForce(self.time_in_force))
         object.__setattr__(self, "session_policy", SessionPolicy(self.session_policy))
         object.__setattr__(self, "reason", IntentReason(self.reason))
+        if isinstance(self.capabilities, str | bytes):
+            raise TypeError("capabilities must be an iterable of ExecutionCapability values")
         capabilities = tuple(ExecutionCapability(value) for value in self.capabilities)
         object.__setattr__(self, "capabilities", capabilities)
         for value, name in (
@@ -473,10 +476,12 @@ class CanonicalChildOrderIntent:
         object.__setattr__(self, "quantity", quantity)
         if quantity <= 0:
             raise ValueError("quantity must be positive and unsigned")
-        if not isinstance(self.effective_session, date) or isinstance(
-            self.effective_session, datetime
-        ):
-            raise TypeError("effective_session must be a date")
+        for name in ("decision_session", "effective_session"):
+            value = getattr(self, name)
+            if not isinstance(value, date) or isinstance(value, datetime):
+                raise TypeError(f"{name} must be a date")
+        if self.effective_session < self.decision_session:
+            raise ValueError("effective_session must not precede decision_session")
         if not isinstance(self.parameters, OrderParameters):
             raise TypeError("parameters must be OrderParameters")
         _intent_phase(self.eligibility_phase)
@@ -523,26 +528,32 @@ class CanonicalChildOrderIntent:
             raise ValueError(
                 f"{time_in_force.value} time in force requires current_phase eligibility"
             )
-        visible = set(LIFECYCLE_V1.phase_spec(self.eligibility_phase).visible_fields)
-        information_fields = _FILL_INFORMATION_FIELDS[eligibility]
-        if eligibility is FillEligibility.CURRENT_PHASE:
-            information_fields = _CURRENT_PHASE_INFORMATION_FIELDS.get(
-                self.eligibility_phase, frozenset()
-            )
-        consumed = visible & information_fields
-        if consumed:
-            fields = ", ".join(sorted(field.value for field in consumed))
-            raise ValueError(
-                f"fill eligibility would consume already visible information: {fields}"
-            )
+        same_session = self.effective_session == self.decision_session
+        if not same_session and eligibility is FillEligibility.CURRENT_PHASE:
+            raise ValueError("current_phase fill eligibility requires the decision session")
+        if same_session:
+            visible = set(LIFECYCLE_V1.phase_spec(self.eligibility_phase).visible_fields)
+            information_fields = _FILL_INFORMATION_FIELDS[eligibility]
+            if eligibility is FillEligibility.CURRENT_PHASE:
+                information_fields = _CURRENT_PHASE_INFORMATION_FIELDS.get(
+                    self.eligibility_phase, frozenset()
+                )
+            consumed = visible & information_fields
+            if consumed:
+                fields = ", ".join(sorted(field.value for field in consumed))
+                raise ValueError(
+                    f"fill eligibility would consume already visible information: {fields}"
+                )
         if self.order_type is OrderType.MARKET:
             if (
                 eligibility is FillEligibility.CURRENT_PHASE
                 and self.eligibility_phase not in _MARKET_FILL_PHASES
             ):
                 raise ValueError("current-phase market order requires a market-fill phase")
-            if eligibility is FillEligibility.NEXT_PHASE and not _later_market_fill_phases(
-                self.eligibility_phase
+            if (
+                eligibility is FillEligibility.NEXT_PHASE
+                and same_session
+                and not _later_market_fill_phases(self.eligibility_phase)
             ):
                 raise ValueError(
                     f"no later market fill phase follows {self.eligibility_phase.value}"
@@ -592,6 +603,7 @@ class CanonicalChildOrderIntent:
             "quantity": self.quantity,
             "order_type": self.order_type.value,
             "parameters": asdict(self.parameters),
+            "decision_session": self.decision_session.isoformat(),
             "effective_session": self.effective_session.isoformat(),
             "eligibility_phase": self.eligibility_phase.value,
             "fill_eligibility": self.fill_eligibility.value,
@@ -617,6 +629,7 @@ class CanonicalChildOrderIntent:
             quantity=value["quantity"],
             order_type=OrderType(value["order_type"]),
             parameters=OrderParameters(**parameters),
+            decision_session=date.fromisoformat(value["decision_session"]),
             effective_session=date.fromisoformat(value["effective_session"]),
             eligibility_phase=LifecyclePhase(value["eligibility_phase"]),
             fill_eligibility=FillEligibility(value["fill_eligibility"]),
@@ -666,6 +679,8 @@ class ExecutionPolicy:
         ):
             object.__setattr__(self, name, ExecutionBehavior(getattr(self, name)))
         object.__setattr__(self, "bar_path", BarPathPolicy(self.bar_path))
+        if not isinstance(self.allow_partial_fills, bool):
+            raise TypeError("allow_partial_fills must be a bool")
         object.__setattr__(
             self, "lifecycle_version", negotiate_lifecycle_version(self.lifecycle_version)
         )
@@ -729,7 +744,7 @@ class ExecutionPolicy:
             impact_bps=value["impact_bps"],
             latency_ms=value["latency_ms"],
             liquidity_fraction=value["liquidity_fraction"],
-            allow_partial_fills=bool(value["allow_partial_fills"]),
+            allow_partial_fills=value["allow_partial_fills"],
             bar_path=BarPathPolicy(value["bar_path"]),
             lifecycle_version=value["lifecycle_version"],
         )
@@ -789,13 +804,18 @@ def validate_child_against_policy(
     }:
         fill_phase = child.eligibility_phase
         if child.fill_eligibility is FillEligibility.NEXT_PHASE:
-            valid_fill_phases = _later_market_fill_phases(fill_phase)
+            valid_fill_phases = (
+                frozenset({LifecyclePhase.OPENING_AUCTION})
+                if child.effective_session > child.decision_session
+                else _later_market_fill_phases(fill_phase)
+            )
         else:
             valid_fill_phases = {fill_phase}
         if policy.market_fill_phase not in valid_fill_phases:
             phases = ", ".join(sorted(phase.value for phase in valid_fill_phases))
             raise ValueError(
-                f"market order fills in {phases}, but policy requires {policy.market_fill_phase.value}"
+                f"market order needs fill phase {phases}, but policy fills at "
+                f"{policy.market_fill_phase.value}"
             )
 
 
@@ -1088,8 +1108,8 @@ def validate_child_lineage(target: CanonicalTargetIntent, child: CanonicalChildO
         raise ValueError("child lifecycle version does not match target")
     if child.asset not in {item.asset for item in target.targets}:
         raise ValueError("child asset is absent from target")
-    if child.effective_session < target.effective_session:
-        raise ValueError("child effective session precedes target effective session")
+    if child.decision_session != target.effective_session:
+        raise ValueError("child decision session does not match target effective session")
     if child.effective_session > target.effective_session:
         return
     target_rank = LIFECYCLE_V1.phase_spec(target.effective_phase).causal_rank
@@ -1123,6 +1143,7 @@ def canonical_intent_fixture() -> dict[str, Any]:
         quantity=10,
         order_type=OrderType.MARKET,
         parameters=OrderParameters(),
+        decision_session=date(2026, 8, 10),
         effective_session=date(2026, 8, 10),
         eligibility_phase=LifecyclePhase.PRE_OPEN,
         fill_eligibility=FillEligibility.OPENING_AUCTION,

@@ -5,6 +5,7 @@
       "opening_auction"
     ],
     "child_intent_id": "child-1",
+    "decision_session": "2026-08-10",
     "effective_session": "2026-08-10",
     "eligibility_phase": "pre_open",
     "fill_eligibility": "opening_auction",

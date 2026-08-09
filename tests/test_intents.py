@@ -81,6 +81,7 @@ def child(**overrides: Any) -> CanonicalChildOrderIntent:
         "quantity": 10.0,
         "order_type": OrderType.MARKET,
         "parameters": OrderParameters(),
+        "decision_session": date(2026, 8, 10),
         "effective_session": date(2026, 8, 10),
         "eligibility_phase": LifecyclePhase.PRE_OPEN,
         "fill_eligibility": FillEligibility.OPENING_AUCTION,
@@ -414,9 +415,29 @@ def test_child_capability_order_is_canonical() -> None:
         ({"quantity": 0}, ValueError, "positive and unsigned"),
         ({"quantity": -1}, ValueError, "positive and unsigned"),
         ({"quantity": cast("Any", True)}, TypeError, "number"),
+        ({"decision_session": DECISION_TIME}, TypeError, "decision_session"),
+        ({"decision_session": cast("Any", "2026-08-10")}, TypeError, "decision_session"),
         ({"effective_session": DECISION_TIME}, TypeError, "effective_session"),
         ({"effective_session": cast("Any", "2026-08-10")}, TypeError, "effective_session"),
         ({"parameters": cast("Any", {"limit_price": 100})}, TypeError, "OrderParameters"),
+        (
+            {"decision_session": date(2026, 8, 11), "effective_session": date(2026, 8, 10)},
+            ValueError,
+            "must not precede",
+        ),
+        (
+            {
+                "decision_session": date(2026, 8, 10),
+                "effective_session": date(2026, 8, 11),
+                "eligibility_phase": LifecyclePhase.INTRABAR,
+                "fill_eligibility": FillEligibility.CURRENT_PHASE,
+                "time_in_force": TimeInForce.IOC,
+                "capabilities": (),
+            },
+            ValueError,
+            "requires the decision session",
+        ),
+        ({"capabilities": cast("Any", "limit")}, TypeError, "capabilities must be an iterable"),
         ({"eligibility_phase": LifecyclePhase.RUN_END}, ValueError, "does not allow"),
         (
             {"order_type": OrderType.LIMIT, "parameters": OrderParameters(), "capabilities": ()},
@@ -733,6 +754,7 @@ def test_execution_policy_round_trip_and_records_all_assumptions() -> None:
             ValueError,
             "requires opening_auction",
         ),
+        ({"allow_partial_fills": cast("Any", 1)}, TypeError, "must be a bool"),
         ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
     ],
 )
@@ -825,6 +847,40 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
                 time_in_force=TimeInForce.DAY,
                 capabilities=(),
             )
+
+    for eligibility_phase in (LifecyclePhase.INTRABAR, LifecyclePhase.CLOSE):
+        next_session_order = child(
+            decision_session=date(2026, 8, 10),
+            effective_session=date(2026, 8, 11),
+            eligibility_phase=eligibility_phase,
+            fill_eligibility=FillEligibility.NEXT_PHASE,
+            time_in_force=TimeInForce.DAY,
+            capabilities=(),
+        )
+        validate_child_against_policy(execution_policy(), next_session_order)
+
+
+def test_close_decisions_support_next_session_auctions() -> None:
+    next_open = child(
+        decision_session=date(2026, 8, 10),
+        effective_session=date(2026, 8, 11),
+        eligibility_phase=LifecyclePhase.CLOSE,
+        fill_eligibility=FillEligibility.OPENING_AUCTION,
+        time_in_force=TimeInForce.OPG,
+        capabilities=(ExecutionCapability.OPENING_AUCTION,),
+    )
+    next_close = child(
+        decision_session=date(2026, 8, 10),
+        effective_session=date(2026, 8, 11),
+        eligibility_phase=LifecyclePhase.CLOSE,
+        order_type=OrderType.MOC,
+        fill_eligibility=FillEligibility.CLOSE_AUCTION,
+        time_in_force=TimeInForce.CLS,
+        capabilities=(ExecutionCapability.CLOSE_AUCTION,),
+    )
+
+    assert next_open.effective_session == date(2026, 8, 11)
+    assert next_close.effective_session == date(2026, 8, 11)
 
 
 def test_position_rule_definition_and_policy_round_trip() -> None:
@@ -1271,9 +1327,13 @@ def test_child_lineage_validation() -> None:
     with pytest.raises(ValueError, match="precedes"):
         validate_child_lineage(later_target, valid)
 
-    prior_session_child = replace(valid, effective_session=date(2026, 8, 9))
-    with pytest.raises(ValueError, match="effective session"):
-        validate_child_lineage(parent, prior_session_child)
+    mismatched_decision_session = replace(
+        valid,
+        decision_session=date(2026, 8, 11),
+        effective_session=date(2026, 8, 11),
+    )
+    with pytest.raises(ValueError, match="decision session"):
+        validate_child_lineage(parent, mismatched_decision_session)
 
     next_session_child = replace(valid, effective_session=date(2026, 8, 11))
     validate_child_lineage(later_target, next_session_child)
