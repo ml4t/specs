@@ -246,8 +246,6 @@ class QuotePayload:
         object.__setattr__(self, "ask", ask)
         object.__setattr__(self, "bid_size", bid_size)
         object.__setattr__(self, "ask_size", ask_size)
-        if ask < bid:
-            raise ValueError("ask must be at least bid")
         if bid_size < 0 or ask_size < 0:
             raise ValueError("quote sizes must be non-negative")
 

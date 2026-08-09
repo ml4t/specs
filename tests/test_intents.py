@@ -122,6 +122,7 @@ def execution_policy(**overrides: Any) -> ExecutionPolicy:
 def rule_state(**overrides: Any) -> PositionRuleState:
     values = {
         "policy_id": "rules-1",
+        "rule_id": "stop",
         "asset": "SPY",
         "activation": RuleActivation.ACTIVE,
         "entry_time": DECISION_TIME,
@@ -469,7 +470,7 @@ def test_child_capability_order_is_canonical() -> None:
                 "capabilities": (),
             },
             ValueError,
-            "current_close",
+            "market-fill phase",
         ),
         (
             {
@@ -868,6 +869,8 @@ def test_child_must_be_supported_by_execution_policy() -> None:
         extended_child,
     )
     any_session_child = child(session_policy=SessionPolicy.ANY)
+    with pytest.raises(ValueError, match="session any"):
+        validate_child_against_policy(execution_policy(), any_session_child)
     validate_child_against_policy(
         execution_policy(supported_sessions=(SessionPolicy.REGULAR, SessionPolicy.EXTENDED)),
         any_session_child,
@@ -924,15 +927,15 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
         )
 
     for eligibility_phase in (LifecyclePhase.INTRABAR, LifecyclePhase.CLOSE):
-        next_session_order = child(
-            decision_session=date(2026, 8, 10),
-            effective_session=date(2026, 8, 11),
-            eligibility_phase=eligibility_phase,
-            fill_eligibility=FillEligibility.NEXT_PHASE,
-            time_in_force=TimeInForce.DAY,
-            capabilities=(),
-        )
-        validate_child_against_policy(execution_policy(), next_session_order)
+        with pytest.raises(ValueError, match="opening_auction eligibility"):
+            child(
+                decision_session=date(2026, 8, 10),
+                effective_session=date(2026, 8, 11),
+                eligibility_phase=eligibility_phase,
+                fill_eligibility=FillEligibility.NEXT_PHASE,
+                time_in_force=TimeInForce.DAY,
+                capabilities=(),
+            )
 
 
 def test_close_decisions_support_next_session_auctions() -> None:
@@ -1328,6 +1331,7 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
     ("overrides", "error", "message"),
     [
         ({"policy_id": ""}, ValueError, "policy_id"),
+        ({"rule_id": ""}, ValueError, "rule_id"),
         ({"asset": ""}, ValueError, "asset"),
         ({"idempotency_key": ""}, ValueError, "idempotency_key"),
         ({"entry_time": datetime(2026, 8, 8)}, ValueError, "entry_time"),
@@ -1506,9 +1510,9 @@ def test_child_lineage_validation() -> None:
         parameters=OrderParameters(limit_price=100),
         effective_session=date(2026, 8, 11),
         eligibility_phase=LifecyclePhase.CLOSE,
-        fill_eligibility=FillEligibility.NEXT_PHASE,
-        time_in_force=TimeInForce.DAY,
-        capabilities=(ExecutionCapability.LIMIT,),
+        fill_eligibility=FillEligibility.OPENING_AUCTION,
+        time_in_force=TimeInForce.OPG,
+        capabilities=(ExecutionCapability.LIMIT, ExecutionCapability.OPENING_AUCTION),
     )
     validate_child_lineage(market_event_target, close_child)
 

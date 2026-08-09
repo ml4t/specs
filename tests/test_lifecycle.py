@@ -385,6 +385,7 @@ def test_market_events_accept_zero_and_negative_instrument_prices() -> None:
     assert event(payload=negative_bar).payload == negative_bar
     assert TradePayload(0, 1).price == 0
     assert QuotePayload(-2, -1, 1, 1).bid == -2
+    assert QuotePayload(2, 1, 1, 1).ask == 1
 
 
 @pytest.mark.parametrize(
@@ -411,7 +412,6 @@ def test_market_event_rejects_non_json_metadata(metadata: object) -> None:
         (lambda: BarPayload(100, math.inf, 99, 100, 1), ValueError, "finite"),
         (lambda: BarPayload(100, 101, 99, 100, cast("Any", True)), TypeError, "number"),
         (lambda: TradePayload(1, -1), ValueError, "size"),
-        (lambda: QuotePayload(2, 1, 1, 1), ValueError, "ask"),
         (lambda: QuotePayload(1, 2, -1, 1), ValueError, "sizes"),
         (lambda: QuotePayload(1, 2, 1, -1), ValueError, "sizes"),
         (lambda: FundingPayload(float("nan")), ValueError, "finite"),

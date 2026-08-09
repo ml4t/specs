@@ -105,7 +105,8 @@ capabilities. The two session fields permit a close decision to schedule a child
 session's opening auction.
 `ExecutionPolicy` records the assumptions under which an engine or venue executes those orders.
 `PositionRulePolicy` and `PositionRuleState` make client-side and broker-native exit behavior
-portable and resumable.
+portable and resumable. Persist one `PositionRuleState` per `rule_id` that carries runtime state,
+including composite parents and stateful leaves.
 
 These contracts serialize to JSON-compatible mappings. Their comparison helpers report exact
 field-level differences, including generated identities and timestamps. Callers comparing two
@@ -117,7 +118,8 @@ returns. Use `validate_child_against_policy()` before submission to reject child
 execution behavior disabled by the selected policy.
 
 For intraday strategies, `NEXT_PHASE` from `INTRABAR` or `MARKET_EVENT` means the next event in
-that same phase. Across sessions, `NEXT_PHASE` resolves to the later session's opening auction.
+that same phase. Cross-session opening fills use `OPENING_AUCTION` explicitly, with `OPG` time in
+force and the opening-auction capability.
 
 `CanonicalChildOrderIntent` requires both `decision_session` and `effective_session`. An order
 decided before the opening auction uses `eligibility_phase=PRE_OPEN` with

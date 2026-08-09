@@ -15,6 +15,7 @@ from ._validation import utc as _utc
 from .lifecycle import (
     LIFECYCLE_V1,
     InformationField,
+    LifecycleContract,
     LifecyclePhase,
     LifecycleVersion,
     negotiate_lifecycle_version,
@@ -186,8 +187,15 @@ class ExitReason(StrEnum):
     LIQUIDATION = "liquidation"
 
 
-def _intent_phase(phase: LifecyclePhase) -> None:
-    if not LIFECYCLE_V1.phase_spec(phase).intents_allowed:
+_LIFECYCLE_CONTRACTS = {LifecycleVersion.V1: LIFECYCLE_V1}
+
+
+def _lifecycle_contract(version: LifecycleVersion) -> LifecycleContract:
+    return _LIFECYCLE_CONTRACTS[version]
+
+
+def _intent_phase(phase: LifecyclePhase, version: LifecycleVersion) -> None:
+    if not _lifecycle_contract(version).phase_spec(phase).intents_allowed:
         raise ValueError(f"phase {phase.value!r} does not allow intents")
 
 
@@ -234,6 +242,11 @@ class CanonicalTargetIntent:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "effective_phase", LifecyclePhase(self.effective_phase))
+        object.__setattr__(
+            self,
+            "lifecycle_version",
+            negotiate_lifecycle_version(self.lifecycle_version, self.effective_phase),
+        )
         object.__setattr__(self, "measure", TargetMeasure(self.measure))
         object.__setattr__(self, "rounding", RoundingPolicy(self.rounding))
         object.__setattr__(self, "residual", ResidualPolicy(self.residual))
@@ -256,7 +269,7 @@ class CanonicalTargetIntent:
             raise TypeError("effective_session must be a date")
         if self.effective_session < self.decision_time.date() - timedelta(days=1):
             raise ValueError("effective_session is stale relative to decision_time")
-        _intent_phase(self.effective_phase)
+        _intent_phase(self.effective_phase, self.lifecycle_version)
         if isinstance(self.targets, str | bytes):
             raise TypeError("targets must be an iterable of AssetTarget values")
         targets = tuple(self.targets)
@@ -280,11 +293,6 @@ class CanonicalTargetIntent:
                 "position_rule_policy_id",
                 _non_empty(self.position_rule_policy_id, "position_rule_policy_id"),
             )
-        object.__setattr__(
-            self,
-            "lifecycle_version",
-            negotiate_lifecycle_version(self.lifecycle_version, self.effective_phase),
-        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible canonical target."""
@@ -397,7 +405,8 @@ _CURRENT_PHASE_INFORMATION_FIELDS: dict[LifecyclePhase, frozenset[InformationFie
     LifecyclePhase.INTRABAR: frozenset(
         {InformationField.CURRENT_HIGH, InformationField.CURRENT_LOW}
     ),
-    LifecyclePhase.CLOSE: frozenset({InformationField.CURRENT_CLOSE}),
+    # Market-event callbacks observe evolving ticks, not completed-bar extremes.
+    LifecyclePhase.MARKET_EVENT: frozenset(),
 }
 
 _ALLOWED_PARAMETERS: dict[OrderType, frozenset[str]] = {
@@ -418,22 +427,25 @@ _MARKET_FILL_PHASES = frozenset(
 )
 
 
-def _later_market_fill_phases(phase: LifecyclePhase) -> frozenset[LifecyclePhase]:
+def _later_market_fill_phases(
+    phase: LifecyclePhase, version: LifecycleVersion
+) -> frozenset[LifecyclePhase]:
     if phase in {LifecyclePhase.INTRABAR, LifecyclePhase.MARKET_EVENT}:
         return frozenset({phase})
-    current_rank = LIFECYCLE_V1.phase_spec(phase).causal_rank
+    contract = _lifecycle_contract(version)
+    current_rank = contract.phase_spec(phase).causal_rank
     later_phases = {
         candidate
         for candidate in _MARKET_FILL_PHASES
-        if LIFECYCLE_V1.phase_spec(candidate).causal_rank > current_rank
+        if contract.phase_spec(candidate).causal_rank > current_rank
     }
     if not later_phases:
         return frozenset()
-    next_rank = min(LIFECYCLE_V1.phase_spec(candidate).causal_rank for candidate in later_phases)
+    next_rank = min(contract.phase_spec(candidate).causal_rank for candidate in later_phases)
     return frozenset(
         candidate
         for candidate in later_phases
-        if LIFECYCLE_V1.phase_spec(candidate).causal_rank == next_rank
+        if contract.phase_spec(candidate).causal_rank == next_rank
     )
 
 
@@ -463,6 +475,11 @@ class CanonicalChildOrderIntent:
         object.__setattr__(self, "side", OrderSide(self.side))
         object.__setattr__(self, "order_type", OrderType(self.order_type))
         object.__setattr__(self, "eligibility_phase", LifecyclePhase(self.eligibility_phase))
+        object.__setattr__(
+            self,
+            "lifecycle_version",
+            negotiate_lifecycle_version(self.lifecycle_version, self.eligibility_phase),
+        )
         object.__setattr__(self, "fill_eligibility", FillEligibility(self.fill_eligibility))
         object.__setattr__(self, "time_in_force", TimeInForce(self.time_in_force))
         object.__setattr__(self, "session_policy", SessionPolicy(self.session_policy))
@@ -490,7 +507,7 @@ class CanonicalChildOrderIntent:
             raise ValueError("effective_session must not precede decision_session")
         if not isinstance(self.parameters, OrderParameters):
             raise TypeError("parameters must be OrderParameters")
-        _intent_phase(self.eligibility_phase)
+        _intent_phase(self.eligibility_phase, self.lifecycle_version)
         if len(self.capabilities) != len(set(self.capabilities)):
             raise ValueError("capabilities must be unique")
         required_capabilities = {
@@ -513,11 +530,6 @@ class CanonicalChildOrderIntent:
             tuple(sorted(self.capabilities, key=lambda capability: capability.value)),
         )
         self._validate_parameters()
-        object.__setattr__(
-            self,
-            "lifecycle_version",
-            negotiate_lifecycle_version(self.lifecycle_version, self.eligibility_phase),
-        )
 
     def _validate_eligibility(self) -> None:
         eligibility = self.fill_eligibility
@@ -535,15 +547,24 @@ class CanonicalChildOrderIntent:
                 f"{time_in_force.value} time in force requires current_phase eligibility"
             )
         same_session = self.effective_session == self.decision_session
+        if not same_session and eligibility is FillEligibility.NEXT_PHASE:
+            raise ValueError("cross-session opening fills require opening_auction eligibility")
         if not same_session and eligibility is FillEligibility.CURRENT_PHASE:
             raise ValueError("current_phase fill eligibility requires the decision session")
+        if (
+            eligibility is FillEligibility.CURRENT_PHASE
+            and self.eligibility_phase not in _MARKET_FILL_PHASES
+        ):
+            raise ValueError("current-phase order requires a market-fill phase")
         if same_session:
-            visible = set(LIFECYCLE_V1.phase_spec(self.eligibility_phase).visible_fields)
+            visible = set(
+                _lifecycle_contract(self.lifecycle_version)
+                .phase_spec(self.eligibility_phase)
+                .visible_fields
+            )
             information_fields = _FILL_INFORMATION_FIELDS[eligibility]
             if eligibility is FillEligibility.CURRENT_PHASE:
-                information_fields = _CURRENT_PHASE_INFORMATION_FIELDS.get(
-                    self.eligibility_phase, frozenset()
-                )
+                information_fields = _CURRENT_PHASE_INFORMATION_FIELDS[self.eligibility_phase]
             consumed = visible & information_fields
             if consumed:
                 fields = ", ".join(sorted(field.value for field in consumed))
@@ -553,14 +574,9 @@ class CanonicalChildOrderIntent:
         if (
             eligibility is FillEligibility.NEXT_PHASE
             and same_session
-            and not _later_market_fill_phases(self.eligibility_phase)
+            and not _later_market_fill_phases(self.eligibility_phase, self.lifecycle_version)
         ):
             raise ValueError(f"no later fill phase follows {self.eligibility_phase.value}")
-        if (
-            eligibility is FillEligibility.CURRENT_PHASE
-            and self.eligibility_phase not in _MARKET_FILL_PHASES
-        ):
-            raise ValueError("current-phase order requires a market-fill phase")
 
     def _validate_parameters(self) -> None:
         parameters = self.parameters
@@ -814,11 +830,7 @@ def validate_child_against_policy(
     }:
         fill_phase = child.eligibility_phase
         if child.fill_eligibility is FillEligibility.NEXT_PHASE:
-            valid_fill_phases = (
-                frozenset({LifecyclePhase.OPENING_AUCTION})
-                if child.effective_session > child.decision_session
-                else _later_market_fill_phases(fill_phase)
-            )
+            valid_fill_phases = _later_market_fill_phases(fill_phase, child.lifecycle_version)
         else:
             valid_fill_phases = {fill_phase}
         if policy.market_fill_phase not in valid_fill_phases:
@@ -999,9 +1011,10 @@ class PositionRulePolicy:
 
 @dataclass(frozen=True, slots=True)
 class PositionRuleState:
-    """Portable rule state with favorable >= 0 and adverse <= 0 fractional excursions."""
+    """Portable per-rule state with signed fractional excursions."""
 
     policy_id: str
+    rule_id: str
     asset: str
     activation: RuleActivation
     entry_time: datetime
@@ -1030,6 +1043,7 @@ class PositionRuleState:
         )
         for value, name in (
             (self.policy_id, "policy_id"),
+            (self.rule_id, "rule_id"),
             (self.asset, "asset"),
             (self.idempotency_key, "idempotency_key"),
         ):
@@ -1095,6 +1109,7 @@ class PositionRuleState:
         """Return a JSON-compatible position-rule state."""
         return {
             "policy_id": self.policy_id,
+            "rule_id": self.rule_id,
             "asset": self.asset,
             "activation": self.activation.value,
             "entry_time": self.entry_time.isoformat(),
@@ -1118,6 +1133,7 @@ class PositionRuleState:
         """Restore and validate position-rule state."""
         return cls(
             policy_id=value["policy_id"],
+            rule_id=value["rule_id"],
             asset=value["asset"],
             activation=RuleActivation(value["activation"]),
             entry_time=datetime.fromisoformat(value["entry_time"]),
@@ -1178,8 +1194,9 @@ def validate_child_lineage(target: CanonicalTargetIntent, child: CanonicalChildO
         raise ValueError("child decision session does not match target effective session")
     if child.effective_session > target.effective_session:
         return
-    target_rank = LIFECYCLE_V1.phase_spec(target.effective_phase).causal_rank
-    child_rank = LIFECYCLE_V1.phase_spec(child.eligibility_phase).causal_rank
+    contract = _lifecycle_contract(target.lifecycle_version)
+    target_rank = contract.phase_spec(target.effective_phase).causal_rank
+    child_rank = contract.phase_spec(child.eligibility_phase).causal_rank
     if child_rank < target_rank:
         raise ValueError("child eligibility phase precedes target effective phase")
 
