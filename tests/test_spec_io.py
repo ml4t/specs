@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 
 import pytest
@@ -118,6 +119,7 @@ def test_write_spec_payload_does_not_replace_valid_file_on_serialization_error(t
     assert read_spec_payload(path) == {"artifact_id": "valid"}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX permission bits")
 def test_write_spec_payload_preserves_existing_permissions(tmp_path) -> None:
     path = tmp_path / "market_data.json"
     path.write_text("{}\n")
@@ -128,6 +130,7 @@ def test_write_spec_payload_preserves_existing_permissions(tmp_path) -> None:
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX permission bits")
 def test_write_spec_payload_applies_umask_to_new_files(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
