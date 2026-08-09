@@ -509,7 +509,10 @@ class LifecycleContract:
                 "lifecycle phases must be complete, unique, and in contract order: "
                 + ", ".join(phase.value for phase in self._EXPECTED_PHASES)
             )
-        registered_phases = _REGISTERED_LIFECYCLE_PHASES[self.version]
+        try:
+            registered_phases = _REGISTERED_LIFECYCLE_PHASES[self.version]
+        except KeyError as error:
+            raise UnsupportedLifecycleVersionError(self.version) from error
         if self.phases != registered_phases:
             raise ValueError(
                 f"lifecycle contract does not match registered version {self.version.value!r}"
@@ -709,10 +712,12 @@ def lifecycle_contract(version: LifecycleVersion | str) -> LifecycleContract:
     """Return the canonical contract for a supported lifecycle version."""
     negotiated = negotiate_lifecycle_version(version)
     try:
-        phases = _REGISTERED_LIFECYCLE_PHASES[negotiated]
+        _REGISTERED_LIFECYCLE_PHASES[negotiated]
     except KeyError as error:
         raise UnsupportedLifecycleVersionError(negotiated) from error
-    return LifecycleContract(version=negotiated, phases=phases)
+    if negotiated is LifecycleVersion.V1:
+        return LIFECYCLE_V1
+    raise UnsupportedLifecycleVersionError(negotiated)  # pragma: no cover - future version
 
 
 def lifecycle_schema() -> dict[str, Any]:

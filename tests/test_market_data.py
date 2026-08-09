@@ -171,8 +171,13 @@ def test_artifact_helpers_normalize_storage_and_provenance() -> None:
     ("factory", "message"),
     [
         (lambda: ArtifactStorage.from_mapping(cast("Any", [])), "storage"),
+        (lambda: ArtifactStorage.from_mapping({"partition_by": b"asset"}), "partition_by"),
         (lambda: ArtifactProvenance.from_mapping(cast("Any", [])), "provenance"),
         (lambda: ArtifactProvenance.from_mapping({"source_artifacts": 1}), "source_artifacts"),
+        (
+            lambda: ArtifactProvenance.from_mapping({"source_artifacts": b"raw"}),
+            "source_artifacts",
+        ),
     ],
 )
 def test_artifact_helpers_reject_malformed_mappings(factory, message: str) -> None:

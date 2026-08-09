@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -173,6 +174,30 @@ def test_read_spec_payload_copies_mapping() -> None:
 
     assert result == {"1": "value"}
     assert result is not source
+
+
+def test_spec_payload_rejects_keys_that_collide_after_normalization(tmp_path) -> None:
+    payload = {1: "numeric", "1": "text"}
+
+    with pytest.raises(ValueError, match="colliding key"):
+        read_spec_payload(payload)
+    with pytest.raises(ValueError, match="colliding key"):
+        write_spec_payload(payload, tmp_path / "collision.json")
+
+
+def test_write_spec_payload_cleans_up_when_temporary_permissions_fail(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_to_restrict(_path, _mode):
+        raise OSError("cannot restrict temporary file")
+
+    monkeypatch.setattr(Path, "chmod", fail_to_restrict)
+    path = tmp_path / "market_data.json"
+
+    with pytest.raises(OSError, match="cannot restrict"):
+        write_spec_payload({"artifact_id": "prices"}, path)
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_write_spec_payload_handles_temporary_file_creation_failure(

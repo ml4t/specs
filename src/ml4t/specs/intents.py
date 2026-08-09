@@ -594,15 +594,16 @@ class CanonicalChildOrderIntent:
                 raise ValueError(
                     f"fill eligibility would consume already visible information: {fields}"
                 )
-        if eligibility is FillEligibility.NEXT_PHASE and _later_market_fill_phases(
-            self.eligibility_phase, self.lifecycle_version
-        ) == {LifecyclePhase.OPENING_AUCTION}:
+        later_market_fill_phases = (
+            _later_market_fill_phases(self.eligibility_phase, self.lifecycle_version)
+            if eligibility is FillEligibility.NEXT_PHASE
+            else frozenset()
+        )
+        if later_market_fill_phases == {LifecyclePhase.OPENING_AUCTION}:
             raise ValueError(
                 "next_phase resolving to the opening auction must use opening_auction eligibility"
             )
-        if eligibility is FillEligibility.NEXT_PHASE and not _later_market_fill_phases(
-            self.eligibility_phase, self.lifecycle_version
-        ):
+        if eligibility is FillEligibility.NEXT_PHASE and not later_market_fill_phases:
             raise ValueError(f"no later fill phase follows {self.eligibility_phase.value}")
 
     def _validate_parameters(self) -> None:

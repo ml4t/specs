@@ -74,7 +74,7 @@ def test_lifecycle_v1_is_complete_versioned_and_round_trips() -> None:
     assert LifecycleContract.from_mapping(LIFECYCLE_V1.to_dict()) == LIFECYCLE_V1
     assert lifecycle_schema()["properties"]["version"] == {"const": "1"}
     assert lifecycle_schema()["properties"]["phases"]["minItems"] == len(LifecyclePhase)
-    assert lifecycle_contract(LifecycleVersion.V1) == LIFECYCLE_V1
+    assert lifecycle_contract(LifecycleVersion.V1) is LIFECYCLE_V1
 
 
 def test_lifecycle_contract_rejects_an_unregistered_enum_member(
@@ -84,6 +84,8 @@ def test_lifecycle_contract_rejects_an_unregistered_enum_member(
 
     with pytest.raises(UnsupportedLifecycleVersionError):
         lifecycle_contract(LifecycleVersion.V1)
+    with pytest.raises(UnsupportedLifecycleVersionError):
+        LifecycleContract(LifecycleVersion.V1, LIFECYCLE_V1.phases)
 
 
 def test_lifecycle_materializes_collections_and_normalizes_enums() -> None:
