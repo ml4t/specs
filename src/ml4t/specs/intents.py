@@ -14,11 +14,12 @@ from ._validation import non_empty as _non_empty
 from ._validation import require_fields as _require_fields
 from ._validation import utc as _utc
 from .lifecycle import (
-    LIFECYCLE_V1,
+    _REGISTERED_LIFECYCLE_CONTRACTS,
     InformationField,
     LifecycleContract,
     LifecyclePhase,
     LifecycleVersion,
+    UnsupportedLifecycleVersionError,
     negotiate_lifecycle_version,
 )
 
@@ -189,11 +190,11 @@ class ExitReason(StrEnum):
     LIQUIDATION = "liquidation"
 
 
-_LIFECYCLE_CONTRACTS = {LifecycleVersion.V1: LIFECYCLE_V1}
-
-
 def _lifecycle_contract(version: LifecycleVersion) -> LifecycleContract:
-    return _LIFECYCLE_CONTRACTS[version]
+    try:
+        return _REGISTERED_LIFECYCLE_CONTRACTS[version]
+    except KeyError as error:
+        raise UnsupportedLifecycleVersionError(version) from error
 
 
 def _intent_phase(phase: LifecyclePhase, version: LifecycleVersion) -> None:
@@ -567,6 +568,16 @@ class CanonicalChildOrderIntent:
             )
         if not same_session and eligibility is FillEligibility.CURRENT_PHASE:
             raise ValueError("current_phase fill eligibility requires the decision session")
+        if not same_session:
+            durable_time_in_force = (
+                {TimeInForce.GTC, TimeInForce.OPG}
+                if eligibility is FillEligibility.OPENING_AUCTION
+                else {TimeInForce.GTC, TimeInForce.CLS}
+            )
+            if time_in_force not in durable_time_in_force:
+                raise ValueError(
+                    "cross-session fills require gtc or the matching auction time in force"
+                )
         if (
             eligibility is FillEligibility.CURRENT_PHASE
             and self.eligibility_phase not in _MARKET_FILL_PHASES
@@ -1307,7 +1318,10 @@ class PositionRuleState:
                 raise ValueError("exit_partial action requires action_quantity")
             if not 0 < self.action_quantity <= self.entry_quantity:
                 raise ValueError("action_quantity must be in (0, entry_quantity]")
-            if self.action_quantity + self.remaining_exit_quantity > self.entry_quantity:
+            accounted_quantity = self.action_quantity + self.remaining_exit_quantity
+            if accounted_quantity > self.entry_quantity and not math.isclose(
+                accounted_quantity, self.entry_quantity, rel_tol=1e-12, abs_tol=1e-12
+            ):
                 raise ValueError(
                     "action_quantity and remaining_exit_quantity exceed entry_quantity"
                 )

@@ -704,6 +704,10 @@ LIFECYCLE_V1 = LifecycleContract(
     phases=_LIFECYCLE_V1_PHASES,
 )
 
+_REGISTERED_LIFECYCLE_CONTRACTS = {
+    LifecycleVersion.V1: LIFECYCLE_V1,
+}
+
 
 def lifecycle_schema() -> dict[str, Any]:
     """Return the generated JSON-schema document for the supported lifecycle version."""

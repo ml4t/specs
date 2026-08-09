@@ -41,6 +41,7 @@ from ml4t.specs import (
     SessionPolicy,
     TargetMeasure,
     TimeInForce,
+    UnsupportedLifecycleVersionError,
     canonical_intent_fixture,
     compare_child_intents,
     compare_target_intents,
@@ -50,6 +51,7 @@ from ml4t.specs import (
     validate_state_against_policy,
     validate_target_against_rule_policy,
 )
+from ml4t.specs import intents as intents_module
 
 DECISION_TIME = datetime(2026, 8, 8, 13, 0, tzinfo=UTC)
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "canonical_intent_v1.json"
@@ -685,6 +687,23 @@ def test_child_rejection_is_atomic(
             },
             "fok time in force requires current_phase",
         ),
+        (
+            {
+                "effective_session": date(2026, 8, 11),
+                "time_in_force": TimeInForce.DAY,
+            },
+            "cross-session fills require gtc or the matching auction time in force",
+        ),
+        (
+            {
+                "effective_session": date(2026, 8, 11),
+                "order_type": OrderType.MOC,
+                "fill_eligibility": FillEligibility.CLOSE_AUCTION,
+                "time_in_force": TimeInForce.DAY,
+                "capabilities": (ExecutionCapability.CLOSE_AUCTION,),
+            },
+            "cross-session fills require gtc or the matching auction time in force",
+        ),
     ],
 )
 def test_child_rejects_contradictory_execution_fields(
@@ -1023,6 +1042,15 @@ def test_close_decisions_support_next_session_auctions() -> None:
 
     assert next_open.effective_session == date(2026, 8, 11)
     assert next_close.effective_session == date(2026, 8, 11)
+
+
+def test_missing_registered_lifecycle_contract_raises_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(intents_module._REGISTERED_LIFECYCLE_CONTRACTS, LifecycleVersion.V1)
+
+    with pytest.raises(UnsupportedLifecycleVersionError):
+        intents_module._lifecycle_contract(LifecycleVersion.V1)
 
 
 def test_position_rule_definition_and_policy_round_trip() -> None:
@@ -1600,6 +1628,19 @@ def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
         PositionRuleState.from_mapping(partially_triggered_hold.to_dict())
         == partially_triggered_hold
     )
+
+
+def test_fractional_position_rule_quantities_allow_floating_point_roundoff() -> None:
+    state = rule_state(
+        entry_quantity=0.3,
+        activation=RuleActivation.TRIGGERED,
+        remaining_exit_quantity=0.2,
+        action=PositionActionType.EXIT_PARTIAL,
+        action_quantity=0.1,
+        exit_reason=ExitReason.STOP_LOSS,
+    )
+
+    assert state.action_quantity == 0.1
 
 
 def test_position_rule_state_and_target_must_match_policy() -> None:
