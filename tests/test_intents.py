@@ -271,6 +271,11 @@ def test_asset_target_rejects_empty_asset(value: str) -> None:
         AssetTarget(value, TargetMeasure.WEIGHT, 0.5)
 
 
+def test_asset_target_rejects_non_string_asset() -> None:
+    with pytest.raises(TypeError, match="must be a string"):
+        AssetTarget(cast("Any", 1), TargetMeasure.WEIGHT, 0.5)
+
+
 @pytest.mark.parametrize("value", [math.inf, math.nan])
 def test_asset_target_rejects_nonfinite_value(value: float) -> None:
     with pytest.raises(ValueError, match="finite"):
@@ -862,7 +867,7 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
     )
     with pytest.raises(ValueError, match="intrabar.*opening_auction"):
         validate_child_against_policy(execution_policy(), current_phase_child)
-    with pytest.raises(ValueError, match="no later market fill phase"):
+    with pytest.raises(ValueError, match="no later fill phase"):
         child(
             eligibility_phase=LifecyclePhase.CLOSE,
             fill_eligibility=FillEligibility.NEXT_PHASE,
@@ -1260,6 +1265,29 @@ def test_position_rule_state_supports_negative_instrument_prices() -> None:
         ({"low_water_mark": 111}, ValueError, "must not exceed"),
         ({"max_favorable_excursion": -0.01}, ValueError, "non-negative fractional"),
         ({"max_adverse_excursion": 0.01}, ValueError, "non-positive fractional"),
+        (
+            {
+                "activation": RuleActivation.INACTIVE,
+                "action": PositionActionType.EXIT_FULL,
+                "exit_reason": ExitReason.SIGNAL,
+            },
+            ValueError,
+            "inactive.*hold",
+        ),
+        (
+            {"activation": RuleActivation.TRIGGERED},
+            ValueError,
+            "require an exit reason",
+        ),
+        (
+            {
+                "activation": RuleActivation.COMPLETE,
+                "action": PositionActionType.EXIT_FULL,
+                "exit_reason": ExitReason.SIGNAL,
+            },
+            ValueError,
+            "zero remaining",
+        ),
         ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
         ({"exit_reason": ExitReason.SIGNAL}, ValueError, "hold and adjust_stop"),
         (
@@ -1398,6 +1426,7 @@ def test_child_lineage_validation() -> None:
     close_child = child(
         order_type=OrderType.LIMIT,
         parameters=OrderParameters(limit_price=100),
+        effective_session=date(2026, 8, 11),
         eligibility_phase=LifecyclePhase.CLOSE,
         fill_eligibility=FillEligibility.NEXT_PHASE,
         time_in_force=TimeInForce.DAY,

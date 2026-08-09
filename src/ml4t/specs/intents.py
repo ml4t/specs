@@ -546,20 +546,18 @@ class CanonicalChildOrderIntent:
                 raise ValueError(
                     f"fill eligibility would consume already visible information: {fields}"
                 )
+        if (
+            eligibility is FillEligibility.NEXT_PHASE
+            and same_session
+            and not _later_market_fill_phases(self.eligibility_phase)
+        ):
+            raise ValueError(f"no later fill phase follows {self.eligibility_phase.value}")
         if self.order_type is OrderType.MARKET:
             if (
                 eligibility is FillEligibility.CURRENT_PHASE
                 and self.eligibility_phase not in _MARKET_FILL_PHASES
             ):
                 raise ValueError("current-phase market order requires a market-fill phase")
-            if (
-                eligibility is FillEligibility.NEXT_PHASE
-                and same_session
-                and not _later_market_fill_phases(self.eligibility_phase)
-            ):
-                raise ValueError(
-                    f"no later market fill phase follows {self.eligibility_phase.value}"
-                )
 
     def _validate_parameters(self) -> None:
         parameters = self.parameters
@@ -1059,6 +1057,17 @@ class PositionRuleState:
             raise ValueError("max_favorable_excursion must be a non-negative fractional return")
         if self.max_adverse_excursion > 0:
             raise ValueError("max_adverse_excursion must be a non-positive fractional return")
+        if (
+            self.activation is RuleActivation.INACTIVE
+            and self.action is not PositionActionType.HOLD
+        ):
+            raise ValueError("inactive position rules require hold action")
+        if self.activation in {RuleActivation.TRIGGERED, RuleActivation.COMPLETE} and (
+            self.exit_reason is ExitReason.NONE
+        ):
+            raise ValueError("triggered and complete position rules require an exit reason")
+        if self.activation is RuleActivation.COMPLETE and self.remaining_exit_quantity != 0:
+            raise ValueError("complete position rules require zero remaining exit quantity")
         if self.action in {PositionActionType.HOLD, PositionActionType.ADJUST_STOP}:
             if self.exit_reason is not ExitReason.NONE:
                 raise ValueError("hold and adjust_stop actions require exit reason none")

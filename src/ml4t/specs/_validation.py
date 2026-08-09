@@ -7,7 +7,9 @@ from datetime import UTC, datetime
 
 
 def non_empty(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    if not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
     return value.strip()
 
