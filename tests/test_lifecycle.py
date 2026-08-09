@@ -310,7 +310,7 @@ def test_market_event_normalizes_string_enums() -> None:
             ValueError,
             "must not precede",
         ),
-        ({"event_time": cast("Any", "now")}, ValueError, "event_time"),
+        ({"event_time": cast("Any", "now")}, TypeError, "event_time"),
         ({"source": ""}, ValueError, "source"),
         ({"asset": "  "}, ValueError, "asset"),
         ({"payload": TradePayload(100, 1)}, TypeError, "BarPayload"),

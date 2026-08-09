@@ -22,10 +22,8 @@ def finite(value: object, name: str) -> float:
 
 
 def utc(value: datetime, name: str) -> datetime:
-    if (
-        not isinstance(value, datetime)
-        or value.tzinfo is None
-        or value.utcoffset() != UTC.utcoffset(value)
-    ):
+    if not isinstance(value, datetime):
+        raise TypeError(f"{name} must be a datetime")
+    if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
         raise ValueError(f"{name} must be timezone-aware UTC")
     return value.astimezone(UTC)

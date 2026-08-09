@@ -672,6 +672,11 @@ class ExecutionPolicy:
         object.__setattr__(self, "policy_id", _non_empty(self.policy_id, "policy_id"))
         if self.market_fill_phase not in _MARKET_FILL_PHASES:
             raise ValueError(f"phase {self.market_fill_phase.value!r} does not allow market fills")
+        if (
+            self.market_fill_phase is LifecyclePhase.OPENING_AUCTION
+            and self.opening_auction is ExecutionBehavior.DISABLED
+        ):
+            raise ValueError("opening-auction market fill phase requires opening_auction behavior")
         for name in ("fee_bps", "slippage_bps", "spread_bps", "impact_bps", "latency_ms"):
             value = _finite(getattr(self, name), name)
             object.__setattr__(self, name, value)
@@ -746,6 +751,17 @@ _FILL_POLICY_FIELD: dict[FillEligibility, str | None] = {
     FillEligibility.CLOSE_AUCTION: "moc",
 }
 
+_CAPABILITY_POLICY_FIELD: dict[ExecutionCapability, str | None] = {
+    ExecutionCapability.LIMIT: "limit",
+    ExecutionCapability.STOP: "stop",
+    ExecutionCapability.STOP_LIMIT: "stop_limit",
+    ExecutionCapability.TRAILING_STOP: "trailing",
+    ExecutionCapability.OPENING_AUCTION: "opening_auction",
+    ExecutionCapability.CLOSE_AUCTION: "moc",
+    ExecutionCapability.PARTIAL_FILL: None,
+    ExecutionCapability.CONTINGENT: "contingent",
+}
+
 
 def validate_child_against_policy(
     policy: ExecutionPolicy, child: CanonicalChildOrderIntent
@@ -756,6 +772,7 @@ def validate_child_against_policy(
         for field in (
             _ORDER_POLICY_FIELD[child.order_type],
             _FILL_POLICY_FIELD[child.fill_eligibility],
+            *(_CAPABILITY_POLICY_FIELD[capability] for capability in child.capabilities),
         )
         if field is not None
     }
@@ -766,11 +783,6 @@ def validate_child_against_policy(
         raise ValueError(f"execution policy disables required behavior: {', '.join(disabled)}")
     if ExecutionCapability.PARTIAL_FILL in child.capabilities and not policy.allow_partial_fills:
         raise ValueError("execution policy disables partial fills")
-    if (
-        ExecutionCapability.CONTINGENT in child.capabilities
-        and policy.contingent is ExecutionBehavior.DISABLED
-    ):
-        raise ValueError("execution policy disables contingent orders")
     if child.order_type is OrderType.MARKET and child.fill_eligibility in {
         FillEligibility.CURRENT_PHASE,
         FillEligibility.NEXT_PHASE,
@@ -919,10 +931,15 @@ class PositionRulePolicy:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> PositionRulePolicy:
         """Restore and validate a position-rule policy."""
+        raw_rules = value["rules"]
+        if not isinstance(raw_rules, Sequence) or isinstance(raw_rules, str | bytes):
+            raise TypeError("rules must be a sequence")
+        if any(not isinstance(rule, Mapping) for rule in raw_rules):
+            raise TypeError("each rule must be a mapping")
         return cls(
             policy_id=value["policy_id"],
             root_rule_id=value["root_rule_id"],
-            rules=tuple(PositionRuleDefinition.from_mapping(rule) for rule in value["rules"]),
+            rules=tuple(PositionRuleDefinition.from_mapping(rule) for rule in raw_rules),
             evaluation_mode=EvaluationMode(value["evaluation_mode"]),
             lifecycle_version=value["lifecycle_version"],
         )

@@ -728,6 +728,11 @@ def test_execution_policy_round_trip_and_records_all_assumptions() -> None:
         ({"market_fill_phase": LifecyclePhase.RUN_END}, ValueError, "market fills"),
         ({"market_fill_phase": LifecyclePhase.CAUSAL_INITIALIZATION}, ValueError, "market fills"),
         ({"market_fill_phase": cast("Any", "close")}, ValueError, "market fills"),
+        (
+            {"opening_auction": ExecutionBehavior.DISABLED},
+            ValueError,
+            "requires opening_auction",
+        ),
         ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
     ],
 )
@@ -760,10 +765,6 @@ def test_child_must_be_supported_by_execution_policy() -> None:
         validate_child_against_policy(
             execution_policy(limit=ExecutionBehavior.DISABLED), limit_child
         )
-    with pytest.raises(ValueError, match="opening_auction"):
-        validate_child_against_policy(
-            execution_policy(opening_auction=ExecutionBehavior.DISABLED), child()
-        )
     with pytest.raises(ValueError, match="partial fills"):
         validate_child_against_policy(execution_policy(allow_partial_fills=False), partial_child)
     contingent_child = child(
@@ -773,6 +774,17 @@ def test_child_must_be_supported_by_execution_policy() -> None:
     )
     with pytest.raises(ValueError, match="contingent"):
         validate_child_against_policy(execution_policy(), contingent_child)
+    extra_capability_child = child(
+        capabilities=(
+            ExecutionCapability.OPENING_AUCTION,
+            ExecutionCapability.TRAILING_STOP,
+        )
+    )
+    with pytest.raises(ValueError, match="trailing"):
+        validate_child_against_policy(
+            execution_policy(trailing=ExecutionBehavior.DISABLED),
+            extra_capability_child,
+        )
 
 
 def test_market_child_fill_phase_must_match_execution_policy() -> None:
@@ -878,6 +890,23 @@ def test_rule_contracts_materialize_mutable_collections() -> None:
     assert leaf.children == ()
     assert policy.rules == (leaf,)
     assert PositionRulePolicy.from_mapping(policy.to_dict()) == policy
+
+
+@pytest.mark.parametrize(
+    ("rules", "message"),
+    [("root", "sequence"), ({"root": {}}, "sequence"), (["root"], "each rule")],
+)
+def test_position_rule_policy_mapping_rejects_malformed_rules(rules: object, message: str) -> None:
+    record = PositionRulePolicy(
+        "rules-1",
+        "root",
+        (PositionRuleDefinition("root", PositionRuleType.STOP_LOSS),),
+        EvaluationMode.CLIENT,
+    ).to_dict()
+    record["rules"] = rules
+
+    with pytest.raises(TypeError, match=message):
+        PositionRulePolicy.from_mapping(record)
 
 
 @pytest.mark.parametrize(
