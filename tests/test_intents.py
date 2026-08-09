@@ -45,6 +45,8 @@ from ml4t.specs import (
     compare_target_intents,
     validate_child_against_policy,
     validate_child_lineage,
+    validate_state_against_policy,
+    validate_target_against_rule_policy,
 )
 
 DECISION_TIME = datetime(2026, 8, 8, 13, 0, tzinfo=UTC)
@@ -234,6 +236,7 @@ def test_target_materializes_single_pass_iterables_before_validation() -> None:
         ),
         ({"effective_phase": cast("Any", "run_start")}, ValueError, "does not allow"),
         ({"targets": ()}, ValueError, "must not be empty"),
+        ({"targets": cast("Any", 1)}, TypeError, "targets must be an iterable"),
         ({"targets": cast("Any", ({"asset": "SPY"},))}, TypeError, "AssetTarget"),
         (
             {
@@ -446,6 +449,7 @@ def test_child_capability_order_is_canonical() -> None:
             "requires the decision session",
         ),
         ({"capabilities": cast("Any", "limit")}, TypeError, "capabilities must be an iterable"),
+        ({"capabilities": cast("Any", 1)}, TypeError, "capabilities must be an iterable"),
         ({"eligibility_phase": LifecyclePhase.RUN_END}, ValueError, "does not allow"),
         (
             {"order_type": OrderType.LIMIT, "parameters": OrderParameters(), "capabilities": ()},
@@ -796,6 +800,16 @@ def test_execution_policy_round_trip_and_records_all_assumptions() -> None:
             TypeError,
             "supported_sessions",
         ),
+        (
+            {"supported_sessions": cast("Any", 1)},
+            TypeError,
+            "supported_sessions",
+        ),
+        (
+            {"supported_sessions": (SessionPolicy.ANY, SessionPolicy.EXTENDED)},
+            ValueError,
+            "cannot be combined",
+        ),
         ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
     ],
 )
@@ -824,6 +838,10 @@ def test_child_must_be_supported_by_execution_policy() -> None:
     )
 
     validate_child_against_policy(execution_policy(), limit_child)
+    mismatched_policy = execution_policy()
+    object.__setattr__(mismatched_policy, "lifecycle_version", cast("Any", "other"))
+    with pytest.raises(ValueError, match="lifecycle version"):
+        validate_child_against_policy(mismatched_policy, limit_child)
     with pytest.raises(ValueError, match="limit"):
         validate_child_against_policy(
             execution_policy(limit=ExecutionBehavior.DISABLED), limit_child
@@ -1196,6 +1214,8 @@ def test_position_rule_policy_validation() -> None:
 
     with pytest.raises(TypeError, match="rules must be an iterable"):
         PositionRulePolicy("rules-1", "root", cast("Any", "root"), EvaluationMode.CLIENT)
+    with pytest.raises(TypeError, match="rules must be an iterable"):
+        PositionRulePolicy("rules-1", "root", cast("Any", 1), EvaluationMode.CLIENT)
     with pytest.raises(TypeError, match="each rule"):
         PositionRulePolicy(
             "rules-1", "root", cast("Any", [{"rule_id": "root"}]), EvaluationMode.CLIENT
@@ -1303,6 +1323,44 @@ def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
     assert PositionRuleState.from_mapping(hold.to_dict()) == hold
     assert PositionRuleState.from_mapping(adjustment.to_dict()) == adjustment
     assert PositionRuleState.from_mapping(exit_state.to_dict()) == exit_state
+
+
+def test_position_rule_state_and_target_must_match_policy() -> None:
+    stop = PositionRuleDefinition("stop", PositionRuleType.STOP_LOSS)
+    policy = PositionRulePolicy("rules-1", "stop", (stop,), EvaluationMode.CLIENT)
+    state = rule_state()
+    target_with_policy = target(position_rule_policy_id="rules-1")
+
+    validate_state_against_policy(policy, state)
+    validate_target_against_rule_policy(target_with_policy, policy)
+
+    with pytest.raises(ValueError, match="policy_id"):
+        validate_state_against_policy(replace(policy, policy_id="other"), state)
+    with pytest.raises(ValueError, match="rule_id"):
+        validate_state_against_policy(policy, replace(state, rule_id="missing"))
+    with pytest.raises(ValueError, match="evaluation_mode"):
+        validate_state_against_policy(
+            replace(policy, evaluation_mode=EvaluationMode.BROKER_NATIVE), state
+        )
+    mismatched_policy = replace(policy)
+    object.__setattr__(mismatched_policy, "lifecycle_version", cast("Any", "other"))
+    with pytest.raises(ValueError, match="lifecycle version"):
+        validate_state_against_policy(mismatched_policy, state)
+
+    wrong_reason = rule_state(
+        activation=RuleActivation.TRIGGERED,
+        action=PositionActionType.EXIT_FULL,
+        exit_reason=ExitReason.TAKE_PROFIT,
+    )
+    with pytest.raises(ValueError, match="incompatible.*stop_loss"):
+        validate_state_against_policy(policy, wrong_reason)
+
+    with pytest.raises(ValueError, match="position_rule_policy_id"):
+        validate_target_against_rule_policy(target(), policy)
+    future_policy = replace(policy, policy_id="rules-1")
+    object.__setattr__(future_policy, "lifecycle_version", cast("Any", "other"))
+    with pytest.raises(ValueError, match="lifecycle version"):
+        validate_target_against_rule_policy(target_with_policy, future_policy)
 
 
 def test_position_rule_state_supports_negative_instrument_prices() -> None:

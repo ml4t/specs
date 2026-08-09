@@ -103,6 +103,8 @@ validated payloads, provider sequence or gap evidence, and immutable JSON metada
 decision session, fill session, eligibility phase, time in force, and required execution
 capabilities. The two session fields permit a close decision to schedule a child for a later
 session's opening auction.
+Targets may schedule an arbitrary future effective session so allocation systems can register
+dated decisions in advance; venue calendars decide whether that date is tradable.
 `ExecutionPolicy` records the assumptions under which an engine or venue executes those orders.
 `PositionRulePolicy` and `PositionRuleState` make client-side and broker-native exit behavior
 portable and resumable. Persist one `PositionRuleState` per `rule_id` that carries runtime state,

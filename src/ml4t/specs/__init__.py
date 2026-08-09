@@ -41,6 +41,8 @@ from .intents import (
     compare_target_intents,
     validate_child_against_policy,
     validate_child_lineage,
+    validate_state_against_policy,
+    validate_target_against_rule_policy,
 )
 from .io import read_spec_payload, write_spec_payload
 from .lifecycle import (
@@ -148,5 +150,7 @@ __all__ = [
     "serialize_artifact_value",
     "validate_child_against_policy",
     "validate_child_lineage",
+    "validate_state_against_policy",
+    "validate_target_against_rule_policy",
     "write_spec_payload",
 ]

@@ -288,6 +288,7 @@ class MarketEvent:
     provider_sequence: str | int | None = None
     gap: GapEvidence | None = None
     metadata: Mapping[str, Any] = dataclass_field(default_factory=dict)
+    __hash__ = None
 
     def __post_init__(self) -> None:
         version = negotiate_lifecycle_version(self.version)

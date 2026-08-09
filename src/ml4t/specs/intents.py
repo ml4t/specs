@@ -272,7 +272,10 @@ class CanonicalTargetIntent:
         _intent_phase(self.effective_phase, self.lifecycle_version)
         if isinstance(self.targets, str | bytes):
             raise TypeError("targets must be an iterable of AssetTarget values")
-        targets = tuple(self.targets)
+        try:
+            targets = tuple(self.targets)
+        except TypeError:
+            raise TypeError("targets must be an iterable of AssetTarget values") from None
         if not targets:
             raise ValueError("targets must not be empty")
         if any(not isinstance(target, AssetTarget) for target in targets):
@@ -486,7 +489,12 @@ class CanonicalChildOrderIntent:
         object.__setattr__(self, "reason", IntentReason(self.reason))
         if isinstance(self.capabilities, str | bytes):
             raise TypeError("capabilities must be an iterable of ExecutionCapability values")
-        capabilities = tuple(ExecutionCapability(value) for value in self.capabilities)
+        try:
+            capabilities = tuple(ExecutionCapability(value) for value in self.capabilities)
+        except TypeError:
+            raise TypeError(
+                "capabilities must be an iterable of ExecutionCapability values"
+            ) from None
         object.__setattr__(self, "capabilities", capabilities)
         for value, name in (
             (self.child_intent_id, "child_intent_id"),
@@ -701,11 +709,18 @@ class ExecutionPolicy:
         object.__setattr__(self, "bar_path", BarPathPolicy(self.bar_path))
         if isinstance(self.supported_sessions, str | bytes):
             raise TypeError("supported_sessions must be an iterable of SessionPolicy values")
-        supported_sessions = tuple(SessionPolicy(value) for value in self.supported_sessions)
+        try:
+            supported_sessions = tuple(SessionPolicy(value) for value in self.supported_sessions)
+        except TypeError:
+            raise TypeError(
+                "supported_sessions must be an iterable of SessionPolicy values"
+            ) from None
         if not supported_sessions:
             raise ValueError("supported_sessions must not be empty")
         if len(supported_sessions) != len(set(supported_sessions)):
             raise ValueError("supported_sessions must be unique")
+        if SessionPolicy.ANY in supported_sessions and len(supported_sessions) != 1:
+            raise ValueError("session any cannot be combined with specific sessions")
         object.__setattr__(
             self,
             "supported_sessions",
@@ -802,6 +817,8 @@ def validate_child_against_policy(
     policy: ExecutionPolicy, child: CanonicalChildOrderIntent
 ) -> None:
     """Reject a child order that requires behavior disabled by its execution policy."""
+    if child.lifecycle_version is not policy.lifecycle_version:
+        raise ValueError("child lifecycle version does not match execution policy")
     fields = {
         field
         for field in (_CAPABILITY_POLICY_FIELD[capability] for capability in child.capabilities)
@@ -940,7 +957,10 @@ class PositionRulePolicy:
     def __post_init__(self) -> None:
         if isinstance(self.rules, str | bytes):
             raise TypeError("rules must be an iterable of PositionRuleDefinition values")
-        rules = tuple(self.rules)
+        try:
+            rules = tuple(self.rules)
+        except TypeError:
+            raise TypeError("rules must be an iterable of PositionRuleDefinition values") from None
         if any(not isinstance(rule, PositionRuleDefinition) for rule in rules):
             raise TypeError("each rule must be a PositionRuleDefinition")
         object.__setattr__(self, "rules", rules)
@@ -1153,6 +1173,46 @@ class PositionRuleState:
         )
 
 
+_RULE_EXIT_REASON: dict[PositionRuleType, ExitReason] = {
+    PositionRuleType.STOP_LOSS: ExitReason.STOP_LOSS,
+    PositionRuleType.TAKE_PROFIT: ExitReason.TAKE_PROFIT,
+    PositionRuleType.TRAILING_STOP: ExitReason.TRAILING_STOP,
+    PositionRuleType.TIME_EXIT: ExitReason.TIME_EXIT,
+}
+
+
+def validate_state_against_policy(policy: PositionRulePolicy, state: PositionRuleState) -> None:
+    """Reject resumable rule state that does not belong to its declared policy rule."""
+    if state.policy_id != policy.policy_id:
+        raise ValueError("state policy_id does not match position-rule policy")
+    if state.evaluation_mode is not policy.evaluation_mode:
+        raise ValueError("state evaluation_mode does not match position-rule policy")
+    if state.lifecycle_version is not policy.lifecycle_version:
+        raise ValueError("state lifecycle version does not match position-rule policy")
+    rules = {rule.rule_id: rule for rule in policy.rules}
+    if state.rule_id not in rules:
+        raise ValueError("state rule_id is absent from position-rule policy")
+    expected_reason = _RULE_EXIT_REASON.get(rules[state.rule_id].rule_type)
+    if expected_reason is not None and state.exit_reason not in {
+        ExitReason.NONE,
+        expected_reason,
+    }:
+        raise ValueError(
+            f"state exit reason {state.exit_reason.value} is incompatible with rule type "
+            f"{rules[state.rule_id].rule_type.value}"
+        )
+
+
+def validate_target_against_rule_policy(
+    target: CanonicalTargetIntent, policy: PositionRulePolicy
+) -> None:
+    """Reject a target whose referenced rule policy identity or version does not match."""
+    if target.position_rule_policy_id != policy.policy_id:
+        raise ValueError("target position_rule_policy_id does not match position-rule policy")
+    if target.lifecycle_version is not policy.lifecycle_version:
+        raise ValueError("target lifecycle version does not match position-rule policy")
+
+
 @dataclass(frozen=True, slots=True)
 class IntentComparison:
     """Field-level canonical-intent comparison result."""
@@ -1271,4 +1331,6 @@ __all__ = [
     "compare_target_intents",
     "validate_child_against_policy",
     "validate_child_lineage",
+    "validate_state_against_policy",
+    "validate_target_against_rule_policy",
 ]
