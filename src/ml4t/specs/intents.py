@@ -11,7 +11,13 @@ from typing import Any
 from ._validation import finite as _finite
 from ._validation import non_empty as _non_empty
 from ._validation import utc as _utc
-from .lifecycle import LIFECYCLE_V1, LifecyclePhase, LifecycleVersion, negotiate_lifecycle_version
+from .lifecycle import (
+    LIFECYCLE_V1,
+    InformationField,
+    LifecyclePhase,
+    LifecycleVersion,
+    negotiate_lifecycle_version,
+)
 
 
 class TargetMeasure(StrEnum):
@@ -243,6 +249,9 @@ class CanonicalTargetIntent:
             raise ValueError("targets must contain each asset once")
         if any(target.measure is not self.measure for target in self.targets):
             raise ValueError("every target measure must match intent measure")
+        object.__setattr__(
+            self, "targets", tuple(sorted(self.targets, key=lambda item: item.asset))
+        )
         cash_buffer = _finite(self.cash_buffer, "cash_buffer")
         if not 0 <= cash_buffer < 1:
             raise ValueError("cash_buffer must be in [0, 1)")
@@ -302,7 +311,7 @@ class CanonicalTargetIntent:
 
 @dataclass(frozen=True, slots=True)
 class OrderParameters:
-    """Typed prices for limit, stop, and trailing child orders."""
+    """Typed prices for child orders; ``trail_percent`` is a decimal fraction in (0, 1]."""
 
     limit_price: float | None = None
     stop_price: float | None = None
@@ -314,6 +323,8 @@ class OrderParameters:
             value = getattr(self, name)
             if value is not None and _finite(value, name) <= 0:
                 raise ValueError(f"{name} must be positive")
+        if self.trail_percent is not None and self.trail_percent > 1:
+            raise ValueError("trail_percent must be at most 1")
 
 
 _REQUIRED_CAPABILITY: dict[OrderType, ExecutionCapability | None] = {
@@ -323,6 +334,22 @@ _REQUIRED_CAPABILITY: dict[OrderType, ExecutionCapability | None] = {
     OrderType.STOP_LIMIT: ExecutionCapability.STOP_LIMIT,
     OrderType.TRAILING_STOP: ExecutionCapability.TRAILING_STOP,
     OrderType.MOC: ExecutionCapability.CLOSE_AUCTION,
+}
+
+_TIME_IN_FORCE_CAPABILITY: dict[TimeInForce, ExecutionCapability | None] = {
+    TimeInForce.DAY: None,
+    TimeInForce.GTC: None,
+    TimeInForce.IOC: None,
+    TimeInForce.FOK: None,
+    TimeInForce.OPG: ExecutionCapability.OPENING_AUCTION,
+    TimeInForce.CLS: ExecutionCapability.CLOSE_AUCTION,
+}
+
+_FILL_ELIGIBILITY_CAPABILITY: dict[FillEligibility, ExecutionCapability | None] = {
+    FillEligibility.CURRENT_PHASE: None,
+    FillEligibility.NEXT_PHASE: None,
+    FillEligibility.OPENING_AUCTION: ExecutionCapability.OPENING_AUCTION,
+    FillEligibility.CLOSE_AUCTION: ExecutionCapability.CLOSE_AUCTION,
 }
 
 
@@ -357,11 +384,32 @@ class CanonicalChildOrderIntent:
         if _finite(self.quantity, "quantity") <= 0:
             raise ValueError("quantity must be positive and unsigned")
         _intent_phase(self.eligibility_phase)
-        required = _REQUIRED_CAPABILITY[self.order_type]
-        if required is not None and required not in self.capabilities:
-            raise ValueError(f"{self.order_type.value} requires capability {required.value}")
         if len(self.capabilities) != len(set(self.capabilities)):
             raise ValueError("capabilities must be unique")
+        required_capabilities = {
+            capability
+            for capability in (
+                _REQUIRED_CAPABILITY[self.order_type],
+                _TIME_IN_FORCE_CAPABILITY[self.time_in_force],
+                _FILL_ELIGIBILITY_CAPABILITY[self.fill_eligibility],
+            )
+            if capability is not None
+        }
+        missing = required_capabilities - set(self.capabilities)
+        if missing:
+            required = ", ".join(sorted(capability.value for capability in missing))
+            raise ValueError(f"child order requires capability: {required}")
+        if (
+            self.fill_eligibility is FillEligibility.CURRENT_PHASE
+            and InformationField.CURRENT_CLOSE
+            in LIFECYCLE_V1.phase_spec(self.eligibility_phase).visible_fields
+        ):
+            raise ValueError("current-phase fills cannot use a phase that observes current_close")
+        object.__setattr__(
+            self,
+            "capabilities",
+            tuple(sorted(self.capabilities, key=lambda capability: capability.value)),
+        )
         self._validate_parameters()
         object.__setattr__(
             self,
@@ -467,7 +515,6 @@ class ExecutionPolicy:
         if self.market_fill_phase not in {
             LifecyclePhase.OPENING_AUCTION,
             LifecyclePhase.INTRABAR,
-            LifecyclePhase.CLOSE,
             LifecyclePhase.MARKET_EVENT,
         }:
             raise ValueError(f"phase {self.market_fill_phase.value!r} does not allow market fills")
@@ -696,10 +743,11 @@ class PositionRuleState:
             raise ValueError("remaining_exit_quantity must be between zero and entry_quantity")
         if self.low_water_mark > self.high_water_mark:
             raise ValueError("low_water_mark must not exceed high_water_mark")
-        if self.action is PositionActionType.HOLD and self.exit_reason is not ExitReason.NONE:
-            raise ValueError("hold action requires exit reason none")
-        if self.action is not PositionActionType.HOLD and self.exit_reason is ExitReason.NONE:
-            raise ValueError("exit or adjustment action requires an exit reason")
+        if self.action in {PositionActionType.HOLD, PositionActionType.ADJUST_STOP}:
+            if self.exit_reason is not ExitReason.NONE:
+                raise ValueError("hold and adjust_stop actions require exit reason none")
+        elif self.exit_reason is ExitReason.NONE:
+            raise ValueError("exit action requires an exit reason")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible position-rule state."""
@@ -780,8 +828,9 @@ def validate_child_lineage(target: CanonicalTargetIntent, child: CanonicalChildO
         raise ValueError("child lifecycle version does not match target")
     if child.asset not in {item.asset for item in target.targets}:
         raise ValueError("child asset is absent from target")
-    phase_order = tuple(LifecyclePhase)
-    if phase_order.index(child.eligibility_phase) < phase_order.index(target.effective_phase):
+    target_rank = LIFECYCLE_V1.phase_spec(target.effective_phase).causal_rank
+    child_rank = LIFECYCLE_V1.phase_spec(child.eligibility_phase).causal_rank
+    if child_rank < target_rank:
         raise ValueError("child eligibility phase precedes target effective phase")
 
 

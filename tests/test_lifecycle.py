@@ -128,6 +128,10 @@ def test_contract_rejects_missing_or_misordered_phases() -> None:
         LifecycleContract(LifecycleVersion.V1, LIFECYCLE_V1.phases[:-1])
     with pytest.raises(ValueError, match="callback"):
         replace(LIFECYCLE_V1.phases[0], callback="")
+    with pytest.raises(ValueError, match="non-negative"):
+        replace(LIFECYCLE_V1.phases[0], causal_rank=-1)
+    with pytest.raises(TypeError, match="integer"):
+        replace(LIFECYCLE_V1.phases[0], causal_rank=cast("Any", True))
 
 
 @pytest.mark.parametrize("raw", [[], "phases", 1])
@@ -177,7 +181,7 @@ def test_market_event_variants_round_trip(kind: MarketEventKind) -> None:
     assert restored.receipt_time.tzinfo is UTC
     assert restored.metadata == {
         "venue": "fixture",
-        "conditions": ["regular"],
+        "conditions": ("regular",),
         "latency_ms": 0.5,
     }
 
@@ -188,7 +192,11 @@ def test_market_event_serialization_does_not_share_nested_metadata() -> None:
 
     record["metadata"]["conditions"].append("late")
 
-    assert original.metadata == {"conditions": ["regular"]}
+    assert original.metadata == {"conditions": ("regular",)}
+    with pytest.raises(TypeError):
+        cast("dict[str, Any]", original.metadata)["venue"] = "late"
+    with pytest.raises(AttributeError):
+        cast("list[str]", original.metadata["conditions"]).append("late")
     with pytest.raises(TypeError):
         hash(original)
 

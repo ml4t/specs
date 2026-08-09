@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 from ._validation import finite as _finite
@@ -131,6 +131,14 @@ def _json_metadata(value: object, path: str = "metadata") -> object:
     if isinstance(value, Sequence) and not isinstance(value, str | bytes):
         return [_json_metadata(item, f"{path}[]") for item in value]
     raise TypeError(f"{path} must contain only JSON-compatible values")
+
+
+def _freeze_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return tuple(_freeze_json(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,7 +286,7 @@ class MarketEvent:
         metadata = _json_metadata(self.metadata)
         if not isinstance(metadata, dict):
             raise TypeError("metadata must be a mapping")
-        object.__setattr__(self, "metadata", metadata)
+        object.__setattr__(self, "metadata", _freeze_json(metadata))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible event record."""
@@ -293,7 +301,7 @@ class MarketEvent:
             "payload": asdict(self.payload),
             "provider_sequence": self.provider_sequence,
             "gap": asdict(self.gap) if self.gap is not None else None,
-            "metadata": deepcopy(self.metadata),
+            "metadata": _json_metadata(self.metadata),
         }
 
     @classmethod
@@ -334,9 +342,14 @@ class LifecyclePhaseSpec:
     intents_allowed: bool
     cardinality: CallbackCardinality
     exception_semantics: CallbackExceptionSemantics
+    causal_rank: int
 
     def __post_init__(self) -> None:
         _non_empty(self.callback, "callback")
+        if isinstance(self.causal_rank, bool) or not isinstance(self.causal_rank, int):
+            raise TypeError("causal_rank must be an integer")
+        if self.causal_rank < 0:
+            raise ValueError("causal_rank must be non-negative")
 
     def require_visible(self, field: InformationField) -> None:
         """Reject information that is unavailable in this phase."""
@@ -389,6 +402,7 @@ class LifecycleContract:
                     "intents_allowed": spec.intents_allowed,
                     "cardinality": spec.cardinality.value,
                     "exception_semantics": spec.exception_semantics.value,
+                    "causal_rank": spec.causal_rank,
                 }
                 for spec in self.phases
             ],
@@ -409,6 +423,7 @@ class LifecycleContract:
                 intents_allowed=bool(raw["intents_allowed"]),
                 cardinality=CallbackCardinality(raw["cardinality"]),
                 exception_semantics=CallbackExceptionSemantics(raw["exception_semantics"]),
+                causal_rank=raw["causal_rank"],
             )
             for raw in raw_phases
         )
@@ -450,6 +465,7 @@ LIFECYCLE_V1 = LifecycleContract(
             False,
             CallbackCardinality.EXACTLY_ONCE,
             CallbackExceptionSemantics.ABORT_BEFORE_SIDE_EFFECTS,
+            0,
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.CAUSAL_INITIALIZATION,
@@ -458,6 +474,7 @@ LIFECYCLE_V1 = LifecycleContract(
             True,
             CallbackCardinality.EXACTLY_ONCE,
             CallbackExceptionSemantics.ABORT_BEFORE_SIDE_EFFECTS,
+            1,
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.PRE_OPEN,
@@ -466,6 +483,7 @@ LIFECYCLE_V1 = LifecycleContract(
             True,
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+            2,
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.OPENING_AUCTION,
@@ -474,6 +492,7 @@ LIFECYCLE_V1 = LifecycleContract(
             True,
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+            3,
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.FILL_RECONCILIATION,
@@ -482,6 +501,7 @@ LIFECYCLE_V1 = LifecycleContract(
             False,
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+            4,
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.INTRABAR,
@@ -490,6 +510,7 @@ LIFECYCLE_V1 = LifecycleContract(
             True,
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+            5,
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.CLOSE,
@@ -498,6 +519,7 @@ LIFECYCLE_V1 = LifecycleContract(
             True,
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+            6,
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.MARKET_EVENT,
@@ -506,6 +528,7 @@ LIFECYCLE_V1 = LifecycleContract(
             True,
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+            5,
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.RUN_END,
@@ -514,6 +537,7 @@ LIFECYCLE_V1 = LifecycleContract(
             False,
             CallbackCardinality.EXACTLY_ONCE,
             CallbackExceptionSemantics.CLEANUP_AND_RERAISE,
+            7,
         ),
     ),
 )
@@ -543,6 +567,7 @@ def lifecycle_schema() -> dict[str, Any]:
                     "intents_allowed",
                     "cardinality",
                     "exception_semantics",
+                    "causal_rank",
                 ],
                 "properties": {
                     "phase": {"const": spec.phase.value},
@@ -551,6 +576,7 @@ def lifecycle_schema() -> dict[str, Any]:
                     "intents_allowed": {"const": spec.intents_allowed},
                     "cardinality": {"const": spec.cardinality.value},
                     "exception_semantics": {"const": spec.exception_semantics.value},
+                    "causal_rank": {"const": spec.causal_rank},
                 },
             }
         )

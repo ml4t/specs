@@ -17,6 +17,8 @@ describe:
 
 - market data column mappings and feed semantics
 - artifact metadata and storage conventions
+- versioned strategy lifecycle and market-event semantics
+- canonical targets, child orders, execution assumptions, and position-rule state
 - lightweight YAML/JSON spec payloads
 
 It exists so the higher-level libraries can exchange consistent contracts without re-defining
@@ -24,7 +26,8 @@ the same dataclasses in multiple repos.
 
 Today it is used by:
 
-- `ml4t-backtest` for `FeedSpec` and market-data execution semantics
+- `ml4t-backtest` for feed, lifecycle, strategy-intent, execution, and position-rule semantics
+- `ml4t-live` for the same runtime-neutral execution contracts
 - `ml4t-engineer` for artifact metadata
 - `ml4t-diagnostic` for artifact and backtest-result integration
 - `ml4t-models` as an optional integration bridge when `ml4t-specs` is installed
@@ -85,6 +88,25 @@ The base artifact layer gives ML4T libraries a shared way to talk about persiste
 - `ArtifactStorage`
 - `ArtifactProvenance`
 - `ArtifactSpec`
+
+### Lifecycle And Market Events
+
+`LifecycleContract` defines callback ordering, available information, intent permissions,
+callback counts, exception behavior, and causal rank for each portable strategy phase.
+`LIFECYCLE_V1` is the supported contract. `MarketEvent` supplies versioned event identity,
+validated payloads, provider sequence or gap evidence, and immutable JSON metadata.
+
+### Strategy And Execution Contracts
+
+`CanonicalTargetIntent` records a strategy decision before order construction.
+`CanonicalChildOrderIntent` records the resulting unsigned order, its target lineage, fill
+eligibility, time in force, and required execution capabilities. `ExecutionPolicy` records the
+assumptions under which an engine or venue executes those orders. `PositionRulePolicy` and
+`PositionRuleState` make client-side and broker-native exit behavior portable and resumable.
+
+These contracts serialize to JSON-compatible mappings and compare independently of runtime-
+specific objects. Auction fill eligibility and auction time-in-force values require the matching
+declared capability. A decision that observes a completed close cannot fill at that same close.
 
 ## Read And Write Spec Payloads
 

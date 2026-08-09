@@ -48,7 +48,7 @@ DECISION_TIME = datetime(2026, 8, 8, 13, 0, tzinfo=UTC)
 
 
 def target(**overrides: Any) -> CanonicalTargetIntent:
-    values = {
+    values: dict[str, Any] = {
         "intent_id": "target-1",
         "decision_time": DECISION_TIME,
         "information_cutoff": DECISION_TIME - timedelta(seconds=1),
@@ -146,20 +146,44 @@ def test_golden_fixture_loads_unchanged_and_round_trips() -> None:
 
 
 @given(
-    value=st.floats(allow_nan=False, allow_infinity=False, width=64),
+    values=st.lists(
+        st.floats(allow_nan=False, allow_infinity=False, width=64),
+        min_size=1,
+        max_size=8,
+    ),
     measure=st.sampled_from(TargetMeasure),
 )
-def test_asset_targets_preserve_finite_signed_values(value: float, measure: TargetMeasure) -> None:
-    accepted = AssetTarget("SPY", measure, value)
+def test_generated_target_intents_round_trip(values: list[float], measure: TargetMeasure) -> None:
+    original = target(
+        measure=measure,
+        targets=tuple(
+            AssetTarget(f"ASSET-{index}", measure, value) for index, value in enumerate(values)
+        ),
+    )
+    restored = CanonicalTargetIntent.from_mapping(original.to_dict())
 
-    assert accepted.value == value
-    assert accepted.measure is measure
+    assert restored == original
+    assert tuple(item.value for item in restored.targets) == tuple(values)
 
 
 def test_target_round_trip_and_optional_position_rule_policy() -> None:
     original = target(position_rule_policy_id="rules-1")
 
     assert CanonicalTargetIntent.from_mapping(original.to_dict()) == original
+
+
+def test_target_order_is_canonical_by_asset() -> None:
+    first = target(
+        targets=(
+            AssetTarget("SPY", TargetMeasure.WEIGHT, 0.5),
+            AssetTarget("QQQ", TargetMeasure.WEIGHT, 0.4),
+        )
+    )
+    second = target(targets=tuple(reversed(first.targets)))
+
+    assert first == second
+    assert tuple(item.asset for item in first.targets) == ("QQQ", "SPY")
+    assert compare_target_intents(first, second).equivalent
 
 
 @pytest.mark.parametrize(
@@ -269,10 +293,65 @@ def test_child_order_types_round_trip(
     original = child(
         order_type=order_type,
         parameters=parameters,
+        fill_eligibility=FillEligibility.NEXT_PHASE,
+        time_in_force=TimeInForce.DAY,
         capabilities=capabilities,
     )
 
     assert CanonicalChildOrderIntent.from_mapping(original.to_dict()) == original
+
+
+@pytest.mark.parametrize(
+    ("overrides", "capability"),
+    [
+        ({"time_in_force": TimeInForce.OPG}, ExecutionCapability.OPENING_AUCTION),
+        ({"time_in_force": TimeInForce.CLS}, ExecutionCapability.CLOSE_AUCTION),
+        (
+            {"fill_eligibility": FillEligibility.OPENING_AUCTION},
+            ExecutionCapability.OPENING_AUCTION,
+        ),
+        (
+            {"fill_eligibility": FillEligibility.CLOSE_AUCTION},
+            ExecutionCapability.CLOSE_AUCTION,
+        ),
+    ],
+)
+def test_auction_semantics_require_matching_capability(
+    overrides: dict[str, Any], capability: ExecutionCapability
+) -> None:
+    values: dict[str, Any] = {
+        "time_in_force": TimeInForce.DAY,
+        "fill_eligibility": FillEligibility.NEXT_PHASE,
+        "capabilities": (),
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValueError, match=capability.value):
+        child(**values)
+
+    values["capabilities"] = (capability,)
+    assert child(**values).capabilities == (capability,)
+
+
+def test_child_capability_order_is_canonical() -> None:
+    capabilities = (ExecutionCapability.PARTIAL_FILL, ExecutionCapability.CONTINGENT)
+    first = child(
+        fill_eligibility=FillEligibility.NEXT_PHASE,
+        time_in_force=TimeInForce.DAY,
+        capabilities=capabilities,
+    )
+    second = child(
+        fill_eligibility=FillEligibility.NEXT_PHASE,
+        time_in_force=TimeInForce.DAY,
+        capabilities=tuple(reversed(capabilities)),
+    )
+
+    assert first == second
+    assert first.capabilities == (
+        ExecutionCapability.CONTINGENT,
+        ExecutionCapability.PARTIAL_FILL,
+    )
+    assert compare_child_intents(first, second).equivalent
 
 
 @pytest.mark.parametrize(
@@ -303,9 +382,22 @@ def test_child_order_types_round_trip(
         ),
         (
             {
+                "eligibility_phase": LifecyclePhase.CLOSE,
+                "fill_eligibility": FillEligibility.CURRENT_PHASE,
+                "time_in_force": TimeInForce.DAY,
+                "capabilities": (),
+            },
+            ValueError,
+            "current_close",
+        ),
+        (
+            {
                 "order_type": OrderType.LIMIT,
                 "parameters": OrderParameters(),
-                "capabilities": (ExecutionCapability.LIMIT,),
+                "capabilities": (
+                    ExecutionCapability.LIMIT,
+                    ExecutionCapability.OPENING_AUCTION,
+                ),
             },
             ValueError,
             "limit_price",
@@ -314,7 +406,10 @@ def test_child_order_types_round_trip(
             {
                 "order_type": OrderType.STOP,
                 "parameters": OrderParameters(),
-                "capabilities": (ExecutionCapability.STOP,),
+                "capabilities": (
+                    ExecutionCapability.STOP,
+                    ExecutionCapability.OPENING_AUCTION,
+                ),
             },
             ValueError,
             "stop_price",
@@ -323,7 +418,10 @@ def test_child_order_types_round_trip(
             {
                 "order_type": OrderType.STOP_LIMIT,
                 "parameters": OrderParameters(stop_price=99),
-                "capabilities": (ExecutionCapability.STOP_LIMIT,),
+                "capabilities": (
+                    ExecutionCapability.STOP_LIMIT,
+                    ExecutionCapability.OPENING_AUCTION,
+                ),
             },
             ValueError,
             "stop_price and limit_price",
@@ -332,7 +430,10 @@ def test_child_order_types_round_trip(
             {
                 "order_type": OrderType.TRAILING_STOP,
                 "parameters": OrderParameters(),
-                "capabilities": (ExecutionCapability.TRAILING_STOP,),
+                "capabilities": (
+                    ExecutionCapability.TRAILING_STOP,
+                    ExecutionCapability.OPENING_AUCTION,
+                ),
             },
             ValueError,
             "exactly one",
@@ -341,7 +442,10 @@ def test_child_order_types_round_trip(
             {
                 "order_type": OrderType.TRAILING_STOP,
                 "parameters": OrderParameters(trail_amount=1, trail_percent=0.01),
-                "capabilities": (ExecutionCapability.TRAILING_STOP,),
+                "capabilities": (
+                    ExecutionCapability.TRAILING_STOP,
+                    ExecutionCapability.OPENING_AUCTION,
+                ),
             },
             ValueError,
             "exactly one",
@@ -365,6 +469,7 @@ def test_child_rejection_is_atomic(
         ({"stop_price": -1}, ValueError, "positive"),
         ({"trail_amount": math.inf}, ValueError, "finite"),
         ({"trail_percent": cast("Any", True)}, TypeError, "number"),
+        ({"trail_percent": 1.01}, ValueError, "at most 1"),
     ],
 )
 def test_order_parameters_reject_invalid_values(
@@ -411,6 +516,7 @@ def test_execution_policy_round_trip_and_records_all_assumptions() -> None:
         ({"market_fill_phase": LifecyclePhase.RUN_START}, ValueError, "market fills"),
         ({"market_fill_phase": LifecyclePhase.RUN_END}, ValueError, "market fills"),
         ({"market_fill_phase": LifecyclePhase.CAUSAL_INITIALIZATION}, ValueError, "market fills"),
+        ({"market_fill_phase": LifecyclePhase.CLOSE}, ValueError, "market fills"),
     ],
 )
 def test_execution_policy_validation(
@@ -605,8 +711,9 @@ def test_position_rule_policy_accepts_shared_acyclic_children() -> None:
     assert policy.root_rule_id == "root"
 
 
-def test_position_rule_state_round_trip_for_hold_and_exit() -> None:
+def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
     hold = rule_state()
+    adjustment = rule_state(action=PositionActionType.ADJUST_STOP)
     exit_state = rule_state(
         activation=RuleActivation.TRIGGERED,
         remaining_exit_quantity=4,
@@ -615,6 +722,7 @@ def test_position_rule_state_round_trip_for_hold_and_exit() -> None:
     )
 
     assert PositionRuleState.from_mapping(hold.to_dict()) == hold
+    assert PositionRuleState.from_mapping(adjustment.to_dict()) == adjustment
     assert PositionRuleState.from_mapping(exit_state.to_dict()) == exit_state
 
 
@@ -633,7 +741,12 @@ def test_position_rule_state_round_trip_for_hold_and_exit() -> None:
         ({"remaining_exit_quantity": -1}, ValueError, "between zero"),
         ({"remaining_exit_quantity": 11}, ValueError, "between zero"),
         ({"low_water_mark": 111}, ValueError, "must not exceed"),
-        ({"exit_reason": ExitReason.SIGNAL}, ValueError, "hold action"),
+        ({"exit_reason": ExitReason.SIGNAL}, ValueError, "hold and adjust_stop"),
+        (
+            {"action": PositionActionType.ADJUST_STOP, "exit_reason": ExitReason.STOP_LOSS},
+            ValueError,
+            "hold and adjust_stop",
+        ),
         (
             {"action": PositionActionType.EXIT_FULL, "exit_reason": ExitReason.NONE},
             ValueError,
@@ -682,3 +795,22 @@ def test_child_lineage_validation() -> None:
     later_target = target(effective_phase=LifecyclePhase.CLOSE)
     with pytest.raises(ValueError, match="precedes"):
         validate_child_lineage(later_target, valid)
+
+    market_event_target = target(effective_phase=LifecyclePhase.MARKET_EVENT)
+    close_child = child(
+        eligibility_phase=LifecyclePhase.CLOSE,
+        fill_eligibility=FillEligibility.NEXT_PHASE,
+        time_in_force=TimeInForce.DAY,
+        capabilities=(),
+    )
+    validate_child_lineage(market_event_target, close_child)
+
+    close_target = target(effective_phase=LifecyclePhase.CLOSE)
+    market_event_child = child(
+        eligibility_phase=LifecyclePhase.MARKET_EVENT,
+        fill_eligibility=FillEligibility.NEXT_PHASE,
+        time_in_force=TimeInForce.DAY,
+        capabilities=(),
+    )
+    with pytest.raises(ValueError, match="precedes"):
+        validate_child_lineage(close_target, market_event_child)
