@@ -513,6 +513,18 @@ def test_child_capability_order_is_canonical() -> None:
         ),
         (
             {
+                "order_type": OrderType.LIMIT,
+                "parameters": OrderParameters(limit_price=100),
+                "eligibility_phase": LifecyclePhase.PRE_OPEN,
+                "fill_eligibility": FillEligibility.CURRENT_PHASE,
+                "time_in_force": TimeInForce.IOC,
+                "capabilities": (ExecutionCapability.LIMIT,),
+            },
+            ValueError,
+            "market-fill phase",
+        ),
+        (
+            {
                 "eligibility_phase": LifecyclePhase.OPENING_AUCTION,
                 "fill_eligibility": FillEligibility.CURRENT_PHASE,
                 "time_in_force": TimeInForce.IOC,

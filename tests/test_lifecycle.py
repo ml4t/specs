@@ -152,6 +152,8 @@ def test_callback_count_and_exception_contracts() -> None:
 
 
 def test_contract_rejects_missing_or_misordered_phases() -> None:
+    with pytest.raises(TypeError, match="each phase must be a LifecyclePhaseSpec"):
+        LifecycleContract(LifecycleVersion.V1, cast("Any", ({"phase": "run_start"},)))
     with pytest.raises(ValueError, match="complete, unique, and in contract order"):
         LifecycleContract(LifecycleVersion.V1, LIFECYCLE_V1.phases[:-1])
     with pytest.raises(ValueError, match="callback"):
@@ -261,6 +263,12 @@ def test_market_event_accepts_gap_evidence_without_sequence() -> None:
     )
 
 
+def test_market_event_normalizes_string_provider_sequence() -> None:
+    gap = GapEvidence(True, "provider sequence skipped", "9", "10")
+
+    assert event(provider_sequence=" 10 ", gap=gap).provider_sequence == "10"
+
+
 @pytest.mark.parametrize(
     ("overrides", "error", "message"),
     [
@@ -268,7 +276,7 @@ def test_market_event_accepts_gap_evidence_without_sequence() -> None:
         ({"detected": cast("Any", 1)}, TypeError, "detected must be a bool"),
         ({"previous_sequence": True}, TypeError, "previous_sequence"),
         ({"current_sequence": 1.5}, TypeError, "current_sequence"),
-        ({"previous_sequence": ""}, ValueError, "must not be empty"),
+        ({"previous_sequence": ""}, ValueError, "non-empty"),
         ({"current_sequence": -1}, ValueError, "non-negative"),
     ],
 )
@@ -320,7 +328,8 @@ def test_market_event_normalizes_string_enums() -> None:
         ({"provider_sequence": None}, ValueError, "gap evidence"),
         ({"provider_sequence": True}, TypeError, "provider_sequence"),
         ({"provider_sequence": 1.5}, TypeError, "provider_sequence"),
-        ({"provider_sequence": ""}, ValueError, "must not be empty"),
+        ({"provider_sequence": ""}, ValueError, "non-empty"),
+        ({"provider_sequence": "   "}, ValueError, "non-empty"),
         ({"provider_sequence": -1}, ValueError, "non-negative"),
         (
             {"gap": cast("Any", {"detected": False, "reason": "not validated"})},

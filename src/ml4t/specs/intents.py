@@ -555,12 +555,11 @@ class CanonicalChildOrderIntent:
             and not _later_market_fill_phases(self.eligibility_phase)
         ):
             raise ValueError(f"no later fill phase follows {self.eligibility_phase.value}")
-        if self.order_type is OrderType.MARKET:
-            if (
-                eligibility is FillEligibility.CURRENT_PHASE
-                and self.eligibility_phase not in _MARKET_FILL_PHASES
-            ):
-                raise ValueError("current-phase market order requires a market-fill phase")
+        if (
+            eligibility is FillEligibility.CURRENT_PHASE
+            and self.eligibility_phase not in _MARKET_FILL_PHASES
+        ):
+            raise ValueError("current-phase order requires a market-fill phase")
 
     def _validate_parameters(self) -> None:
         parameters = self.parameters

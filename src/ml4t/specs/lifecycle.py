@@ -145,8 +145,8 @@ def _freeze_json(value: object) -> object:
 def _provider_sequence(value: object, name: str) -> str | int | None:
     if isinstance(value, bool) or not isinstance(value, str | int | None):
         raise TypeError(f"{name} must be a string, integer, or None")
-    if isinstance(value, str) and not value:
-        raise ValueError(f"{name} must not be empty")
+    if isinstance(value, str):
+        return _non_empty(value, name)
     if isinstance(value, int) and value < 0:
         raise ValueError(f"{name} must be non-negative")
     return value
@@ -165,8 +165,16 @@ class GapEvidence:
         if not isinstance(self.detected, bool):
             raise TypeError("detected must be a bool")
         object.__setattr__(self, "reason", _non_empty(self.reason, "gap reason"))
-        _provider_sequence(self.previous_sequence, "previous_sequence")
-        _provider_sequence(self.current_sequence, "current_sequence")
+        object.__setattr__(
+            self,
+            "previous_sequence",
+            _provider_sequence(self.previous_sequence, "previous_sequence"),
+        )
+        object.__setattr__(
+            self,
+            "current_sequence",
+            _provider_sequence(self.current_sequence, "current_sequence"),
+        )
         if self.detected and (self.previous_sequence is None or self.current_sequence is None):
             raise ValueError("detected gap requires previous_sequence and current_sequence")
 
@@ -306,7 +314,11 @@ class MarketEvent:
             raise ValueError("provider_sequence or gap evidence is required")
         if self.gap is not None and not isinstance(self.gap, GapEvidence):
             raise TypeError("gap must be GapEvidence or None")
-        _provider_sequence(self.provider_sequence, "provider_sequence")
+        object.__setattr__(
+            self,
+            "provider_sequence",
+            _provider_sequence(self.provider_sequence, "provider_sequence"),
+        )
         if (
             self.provider_sequence is not None
             and self.gap is not None
@@ -426,6 +438,8 @@ class LifecycleContract:
     def __post_init__(self) -> None:
         object.__setattr__(self, "version", negotiate_lifecycle_version(self.version))
         object.__setattr__(self, "phases", tuple(self.phases))
+        if any(not isinstance(spec, LifecyclePhaseSpec) for spec in self.phases):
+            raise TypeError("each phase must be a LifecyclePhaseSpec")
         observed = tuple(spec.phase for spec in self.phases)
         if observed != self._EXPECTED_PHASES:
             raise ValueError(
