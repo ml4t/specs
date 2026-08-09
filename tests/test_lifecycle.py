@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
+from jsonschema import ValidationError, validate
 
 from ml4t.specs import (
     LIFECYCLE_V1,
@@ -69,6 +70,22 @@ def test_lifecycle_v1_is_complete_versioned_and_round_trips() -> None:
     assert LifecycleContract.from_mapping(LIFECYCLE_V1.to_dict()) == LIFECYCLE_V1
     assert lifecycle_schema()["properties"]["version"] == {"const": "1"}
     assert lifecycle_schema()["properties"]["phases"]["minItems"] == len(LifecyclePhase)
+
+
+def test_lifecycle_schema_accepts_only_the_exact_versioned_contract() -> None:
+    schema = lifecycle_schema()
+    contract = LIFECYCLE_V1.to_dict()
+    validate(contract, schema)
+
+    malformed = LIFECYCLE_V1.to_dict()
+    malformed["phases"][0]["callback"] = "renamed"
+    with pytest.raises(ValidationError):
+        validate(malformed, schema)
+
+    malformed = LIFECYCLE_V1.to_dict()
+    malformed["phases"][1]["visible_fields"] = ["current_close"]
+    with pytest.raises(ValidationError):
+        validate(malformed, schema)
 
 
 def test_opening_decisions_cannot_observe_current_close() -> None:
@@ -165,6 +182,17 @@ def test_market_event_variants_round_trip(kind: MarketEventKind) -> None:
     }
 
 
+def test_market_event_serialization_does_not_share_nested_metadata() -> None:
+    original = event(metadata={"conditions": ["regular"]})
+    record = original.to_dict()
+
+    record["metadata"]["conditions"].append("late")
+
+    assert original.metadata == {"conditions": ["regular"]}
+    with pytest.raises(TypeError):
+        hash(original)
+
+
 def test_market_event_accepts_gap_evidence_without_sequence() -> None:
     gap = GapEvidence(True, "provider sequence skipped", "10", "12")
     original = event(provider_sequence=None, gap=gap)
@@ -239,6 +267,14 @@ def test_market_event_mapping_rejects_malformed_nested_values() -> None:
         MarketEvent.from_mapping(payload)
 
 
+def test_market_events_accept_zero_and_negative_instrument_prices() -> None:
+    negative_bar = BarPayload(-10, -5, -40, -37.63, 1_000)
+
+    assert event(payload=negative_bar).payload == negative_bar
+    assert TradePayload(0, 1).price == 0
+    assert QuotePayload(-2, -1, 1, 1).bid == -2
+
+
 @pytest.mark.parametrize(
     "metadata",
     [
@@ -260,14 +296,9 @@ def test_market_event_rejects_non_json_metadata(metadata: object) -> None:
         (lambda: BarPayload(100, 99, 98, 99, 1), ValueError, "high"),
         (lambda: BarPayload(100, 101, 100, 99, 1), ValueError, "low"),
         (lambda: BarPayload(100, 101, 99, 100, -1), ValueError, "volume"),
-        (lambda: BarPayload(0, 101, 99, 100, 1), ValueError, "positive"),
-        (lambda: BarPayload(100, 101, -1, 100, 1), ValueError, "positive"),
         (lambda: BarPayload(100, math.inf, 99, 100, 1), ValueError, "finite"),
         (lambda: BarPayload(100, 101, 99, 100, cast("Any", True)), TypeError, "number"),
-        (lambda: TradePayload(0, 1), ValueError, "price"),
         (lambda: TradePayload(1, -1), ValueError, "size"),
-        (lambda: QuotePayload(0, 1, 1, 1), ValueError, "positive"),
-        (lambda: QuotePayload(1, 0, 1, 1), ValueError, "positive"),
         (lambda: QuotePayload(2, 1, 1, 1), ValueError, "ask"),
         (lambda: QuotePayload(1, 2, -1, 1), ValueError, "sizes"),
         (lambda: QuotePayload(1, 2, 1, -1), ValueError, "sizes"),

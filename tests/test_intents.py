@@ -408,6 +408,9 @@ def test_execution_policy_round_trip_and_records_all_assumptions() -> None:
         ({"spread_bps": cast("Any", True)}, TypeError, "number"),
         ({"liquidity_fraction": 0}, ValueError, r"\(0, 1\]"),
         ({"liquidity_fraction": 1.1}, ValueError, r"\(0, 1\]"),
+        ({"market_fill_phase": LifecyclePhase.RUN_START}, ValueError, "market fills"),
+        ({"market_fill_phase": LifecyclePhase.RUN_END}, ValueError, "market fills"),
+        ({"market_fill_phase": LifecyclePhase.CAUSAL_INITIALIZATION}, ValueError, "market fills"),
     ],
 )
 def test_execution_policy_validation(
@@ -450,6 +453,25 @@ def test_position_rule_definition_and_policy_round_trip() -> None:
 
     assert PositionRulePolicy.from_mapping(original.to_dict()) == original
     assert PositionRuleDefinition.from_mapping(stop.to_dict()) == stop
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("parameters", "pct", "parameters must be a sequence"),
+        ("parameters", ["pct"], "each parameter must be a mapping"),
+        ("children", "root", "children must be a sequence"),
+        ("children", 1, "children must be a sequence"),
+    ],
+)
+def test_position_rule_definition_mapping_rejects_malformed_collections(
+    field: str, value: object, message: str
+) -> None:
+    record = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS).to_dict()
+    record[field] = value
+
+    with pytest.raises(TypeError, match=message):
+        PositionRuleDefinition.from_mapping(record)
 
 
 @pytest.mark.parametrize(
@@ -533,6 +555,54 @@ def test_position_rule_policy_validation() -> None:
         arguments.update(values)
         with pytest.raises(ValueError, match=message):
             PositionRulePolicy(**cast("Any", arguments))
+
+
+def test_position_rule_policy_rejects_cycles_and_unreachable_rules() -> None:
+    cyclic_root = PositionRuleDefinition(
+        "root",
+        PositionRuleType.COMPOSITE,
+        children=("child",),
+        composition=RuleComposition.ALL,
+    )
+    cyclic_child = PositionRuleDefinition(
+        "child",
+        PositionRuleType.COMPOSITE,
+        children=("root",),
+        composition=RuleComposition.ALL,
+    )
+    with pytest.raises(ValueError, match="cycle"):
+        PositionRulePolicy("rules-1", "root", (cyclic_root, cyclic_child), EvaluationMode.CLIENT)
+
+    root = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS)
+    unreachable = PositionRuleDefinition("unreachable", PositionRuleType.TAKE_PROFIT)
+    with pytest.raises(ValueError, match="unreachable"):
+        PositionRulePolicy("rules-1", "root", (root, unreachable), EvaluationMode.CLIENT)
+
+
+def test_position_rule_policy_accepts_shared_acyclic_children() -> None:
+    leaf = PositionRuleDefinition("leaf", PositionRuleType.STOP_LOSS)
+    left = PositionRuleDefinition(
+        "left",
+        PositionRuleType.COMPOSITE,
+        children=("leaf",),
+        composition=RuleComposition.ALL,
+    )
+    right = PositionRuleDefinition(
+        "right",
+        PositionRuleType.COMPOSITE,
+        children=("leaf",),
+        composition=RuleComposition.ALL,
+    )
+    root = PositionRuleDefinition(
+        "root",
+        PositionRuleType.COMPOSITE,
+        children=("left", "right"),
+        composition=RuleComposition.ALL,
+    )
+
+    policy = PositionRulePolicy("rules-1", "root", (root, left, right, leaf), EvaluationMode.CLIENT)
+
+    assert policy.root_rule_id == "root"
 
 
 def test_position_rule_state_round_trip_for_hold_and_exit() -> None:

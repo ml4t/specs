@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, ClassVar
+
+from ._validation import finite as _finite
+from ._validation import non_empty as _non_empty
+from ._validation import utc as _utc
 
 
 class LifecycleVersion(StrEnum):
@@ -109,31 +114,6 @@ class LifecycleCountError(ValueError):
     """Raised when callback invocation counts violate the contract."""
 
 
-def _non_empty(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} must be a non-empty string")
-    return value
-
-
-def _finite(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise TypeError(f"{name} must be a number")
-    result = float(value)
-    if not math.isfinite(result):
-        raise ValueError(f"{name} must be finite")
-    return result
-
-
-def _utc(value: datetime, name: str) -> datetime:
-    if (
-        not isinstance(value, datetime)
-        or value.tzinfo is None
-        or value.utcoffset() != UTC.utcoffset(value)
-    ):
-        raise ValueError(f"{name} must be timezone-aware UTC")
-    return value.astimezone(UTC)
-
-
 def _json_metadata(value: object, path: str = "metadata") -> object:
     if value is None or isinstance(value, str | bool | int):
         return value
@@ -190,8 +170,6 @@ class BarPayload:
             name: _finite(getattr(self, name), name)
             for name in ("open", "high", "low", "close", "volume")
         }
-        if any(values[name] <= 0 for name in ("open", "high", "low", "close")):
-            raise ValueError("OHLC prices must be positive")
         if values["volume"] < 0:
             raise ValueError("volume must be non-negative")
         if values["high"] < max(values["open"], values["low"], values["close"]):
@@ -208,8 +186,7 @@ class TradePayload:
     size: float
 
     def __post_init__(self) -> None:
-        if _finite(self.price, "price") <= 0:
-            raise ValueError("price must be positive")
+        _finite(self.price, "price")
         if _finite(self.size, "size") < 0:
             raise ValueError("size must be non-negative")
 
@@ -226,8 +203,6 @@ class QuotePayload:
     def __post_init__(self) -> None:
         bid = _finite(self.bid, "bid")
         ask = _finite(self.ask, "ask")
-        if bid <= 0 or ask <= 0:
-            raise ValueError("bid and ask must be positive")
         if ask < bid:
             raise ValueError("ask must be at least bid")
         if _finite(self.bid_size, "bid_size") < 0 or _finite(self.ask_size, "ask_size") < 0:
@@ -256,7 +231,10 @@ _PAYLOAD_TYPES: dict[MarketEventKind, type[MarketEventPayload]] = {
 
 @dataclass(frozen=True, slots=True)
 class MarketEvent:
-    """Versioned event identity with validated payload and gap evidence."""
+    """Versioned event identity with validated payload and gap evidence.
+
+    Events are unhashable because JSON metadata may contain mappings and sequences.
+    """
 
     version: LifecycleVersion
     event_time: datetime
@@ -315,7 +293,7 @@ class MarketEvent:
             "payload": asdict(self.payload),
             "provider_sequence": self.provider_sequence,
             "gap": asdict(self.gap) if self.gap is not None else None,
-            "metadata": dict(self.metadata),
+            "metadata": deepcopy(self.metadata),
         }
 
     @classmethod
@@ -543,15 +521,51 @@ LIFECYCLE_V1 = LifecycleContract(
 
 def lifecycle_schema() -> dict[str, Any]:
     """Return the generated JSON-schema document for the supported lifecycle version."""
+    phase_schemas = []
+    for spec in LIFECYCLE_V1.phases:
+        visible_fields = [{"const": field.value} for field in spec.visible_fields]
+        visible_fields_schema: dict[str, Any] = {
+            "type": "array",
+            "items": False,
+            "minItems": len(visible_fields),
+            "maxItems": len(visible_fields),
+        }
+        if visible_fields:
+            visible_fields_schema["prefixItems"] = visible_fields
+        phase_schemas.append(
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "phase",
+                    "callback",
+                    "visible_fields",
+                    "intents_allowed",
+                    "cardinality",
+                    "exception_semantics",
+                ],
+                "properties": {
+                    "phase": {"const": spec.phase.value},
+                    "callback": {"const": spec.callback},
+                    "visible_fields": visible_fields_schema,
+                    "intents_allowed": {"const": spec.intents_allowed},
+                    "cardinality": {"const": spec.cardinality.value},
+                    "exception_semantics": {"const": spec.exception_semantics.value},
+                },
+            }
+        )
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "ML4T portable lifecycle contract",
         "type": "object",
+        "additionalProperties": False,
         "required": ["version", "phases"],
         "properties": {
             "version": {"const": LifecycleVersion.V1.value},
             "phases": {
                 "type": "array",
+                "prefixItems": phase_schemas,
+                "items": False,
                 "minItems": len(LifecyclePhase),
                 "maxItems": len(LifecyclePhase),
             },

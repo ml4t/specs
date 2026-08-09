@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
 
+from ._validation import finite as _finite
+from ._validation import non_empty as _non_empty
+from ._validation import utc as _utc
 from .lifecycle import LIFECYCLE_V1, LifecyclePhase, LifecycleVersion, negotiate_lifecycle_version
 
 
@@ -175,31 +177,6 @@ class ExitReason(StrEnum):
     TIME_EXIT = "time_exit"
     SIGNAL = "signal"
     LIQUIDATION = "liquidation"
-
-
-def _non_empty(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} must be a non-empty string")
-    return value
-
-
-def _finite(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise TypeError(f"{name} must be a number")
-    result = float(value)
-    if not math.isfinite(result):
-        raise ValueError(f"{name} must be finite")
-    return result
-
-
-def _utc(value: datetime, name: str) -> datetime:
-    if (
-        not isinstance(value, datetime)
-        or value.tzinfo is None
-        or value.utcoffset() != UTC.utcoffset(value)
-    ):
-        raise ValueError(f"{name} must be timezone-aware UTC")
-    return value.astimezone(UTC)
 
 
 def _intent_phase(phase: LifecyclePhase) -> None:
@@ -487,6 +464,13 @@ class ExecutionPolicy:
 
     def __post_init__(self) -> None:
         _non_empty(self.policy_id, "policy_id")
+        if self.market_fill_phase not in {
+            LifecyclePhase.OPENING_AUCTION,
+            LifecyclePhase.INTRABAR,
+            LifecyclePhase.CLOSE,
+            LifecyclePhase.MARKET_EVENT,
+        }:
+            raise ValueError(f"phase {self.market_fill_phase.value!r} does not allow market fills")
         for name in ("fee_bps", "slippage_bps", "spread_bps", "impact_bps", "latency_ms"):
             if _finite(getattr(self, name), name) < 0:
                 raise ValueError(f"{name} must be non-negative")
@@ -575,13 +559,21 @@ class PositionRuleDefinition:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> PositionRuleDefinition:
         """Restore and validate a rule definition."""
+        raw_parameters = value.get("parameters", ())
+        if not isinstance(raw_parameters, Sequence) or isinstance(raw_parameters, str | bytes):
+            raise TypeError("parameters must be a sequence")
+        if any(not isinstance(parameter, Mapping) for parameter in raw_parameters):
+            raise TypeError("each parameter must be a mapping")
+        raw_children = value.get("children", ())
+        if not isinstance(raw_children, Sequence) or isinstance(raw_children, str | bytes):
+            raise TypeError("children must be a sequence")
         return cls(
             rule_id=value["rule_id"],
             rule_type=PositionRuleType(value["rule_type"]),
             parameters=tuple(
-                (parameter["name"], parameter["value"]) for parameter in value.get("parameters", ())
+                (parameter["name"], parameter["value"]) for parameter in raw_parameters
             ),
-            children=tuple(value.get("children", ())),
+            children=tuple(raw_children),
             composition=(
                 RuleComposition(value["composition"])
                 if value.get("composition") is not None
@@ -613,6 +605,25 @@ class PositionRulePolicy:
         }
         if unknown_children:
             raise ValueError(f"unknown position rule children: {sorted(unknown_children)}")
+        rules_by_id = {rule.rule_id: rule for rule in self.rules}
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(rule_id: str) -> None:
+            if rule_id in visiting:
+                raise ValueError(f"position rule graph contains a cycle at {rule_id!r}")
+            if rule_id in visited:
+                return
+            visiting.add(rule_id)
+            for child in rules_by_id[rule_id].children:
+                visit(child)
+            visiting.remove(rule_id)
+            visited.add(rule_id)
+
+        visit(self.root_rule_id)
+        unreachable = set(rule_ids) - visited
+        if unreachable:
+            raise ValueError(f"unreachable position rules: {sorted(unreachable)}")
         object.__setattr__(
             self, "lifecycle_version", negotiate_lifecycle_version(self.lifecycle_version)
         )
@@ -740,24 +751,25 @@ class IntentComparison:
     differences: tuple[str, ...]
 
 
+def _compare_intent_records(
+    left_record: Mapping[str, Any], right_record: Mapping[str, Any]
+) -> IntentComparison:
+    differences = tuple(key for key in left_record if left_record.get(key) != right_record.get(key))
+    return IntentComparison(not differences, differences)
+
+
 def compare_target_intents(
     left: CanonicalTargetIntent, right: CanonicalTargetIntent
 ) -> IntentComparison:
     """Compare strategy decisions before venue-dependent outcomes."""
-    left_record = left.to_dict()
-    right_record = right.to_dict()
-    differences = tuple(key for key in left_record if left_record.get(key) != right_record.get(key))
-    return IntentComparison(not differences, differences)
+    return _compare_intent_records(left.to_dict(), right.to_dict())
 
 
 def compare_child_intents(
     left: CanonicalChildOrderIntent, right: CanonicalChildOrderIntent
 ) -> IntentComparison:
     """Compare child orders without comparing venue fill outcomes."""
-    left_record = left.to_dict()
-    right_record = right.to_dict()
-    differences = tuple(key for key in left_record if left_record.get(key) != right_record.get(key))
-    return IntentComparison(not differences, differences)
+    return _compare_intent_records(left.to_dict(), right.to_dict())
 
 
 def validate_child_lineage(target: CanonicalTargetIntent, child: CanonicalChildOrderIntent) -> None:
