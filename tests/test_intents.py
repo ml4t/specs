@@ -1085,6 +1085,25 @@ def test_intent_mapping_missing_required_fields_are_contract_errors(
         restore(malformed)
 
 
+@pytest.mark.parametrize(
+    ("restore", "field", "malformed"),
+    [
+        (CanonicalChildOrderIntent.from_mapping, "capabilities", "limit"),
+        (CanonicalChildOrderIntent.from_mapping, "capabilities", 1),
+        (ExecutionPolicy.from_mapping, "supported_sessions", "regular"),
+        (ExecutionPolicy.from_mapping, "supported_sessions", 1),
+    ],
+)
+def test_intent_mapping_rejects_malformed_nested_sequences(
+    restore: Any, field: str, malformed: object
+) -> None:
+    record = child().to_dict() if field == "capabilities" else execution_policy().to_dict()
+    record[field] = malformed
+
+    with pytest.raises(TypeError, match=field):
+        restore(record)
+
+
 def test_rule_contracts_materialize_mutable_collections() -> None:
     leaf = PositionRuleDefinition(
         "leaf",
@@ -1392,11 +1411,21 @@ def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
         action=PositionActionType.EXIT_FULL,
         exit_reason=ExitReason.STOP_LOSS,
     )
+    partially_triggered_hold = rule_state(
+        activation=RuleActivation.TRIGGERED,
+        remaining_exit_quantity=4,
+        action=PositionActionType.HOLD,
+        exit_reason=ExitReason.STOP_LOSS,
+    )
 
     assert PositionRuleState.from_mapping(hold.to_dict()) == hold
     assert PositionRuleState.from_mapping(adjustment.to_dict()) == adjustment
     assert PositionRuleState.from_mapping(exit_state.to_dict()) == exit_state
     assert PositionRuleState.from_mapping(complete.to_dict()) == complete
+    assert (
+        PositionRuleState.from_mapping(partially_triggered_hold.to_dict())
+        == partially_triggered_hold
+    )
 
 
 def test_position_rule_state_and_target_must_match_policy() -> None:
@@ -1534,11 +1563,11 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
             "zero remaining",
         ),
         ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
-        ({"exit_reason": ExitReason.SIGNAL}, ValueError, "hold and adjust_stop"),
+        ({"exit_reason": ExitReason.SIGNAL}, ValueError, "untriggered hold"),
         (
             {"action": PositionActionType.ADJUST_STOP, "exit_reason": ExitReason.STOP_LOSS},
             ValueError,
-            "hold and adjust_stop",
+            "adjust_stop action",
         ),
     ],
 )

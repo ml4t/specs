@@ -410,7 +410,6 @@ _FILL_ELIGIBILITY_CAPABILITY: dict[FillEligibility, ExecutionCapability | None] 
 }
 
 _FILL_INFORMATION_FIELDS: dict[FillEligibility, frozenset[InformationField]] = {
-    FillEligibility.CURRENT_PHASE: frozenset(),
     FillEligibility.NEXT_PHASE: frozenset(),
     FillEligibility.OPENING_AUCTION: frozenset(
         {InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN}
@@ -573,20 +572,19 @@ class CanonicalChildOrderIntent:
         ):
             raise ValueError("current-phase order requires a market-fill phase")
         if same_session:
-            visible = set(
-                _lifecycle_contract(self.lifecycle_version)
-                .phase_spec(self.eligibility_phase)
-                .visible_fields
-            )
-            information_fields = _FILL_INFORMATION_FIELDS[eligibility]
             if eligibility is FillEligibility.CURRENT_PHASE:
-                information_fields = frozenset(
+                consumed = frozenset(
                     _lifecycle_contract(self.lifecycle_version)
                     .phase_spec(self.eligibility_phase)
                     .current_phase_fill_conflicts
                 )
-                consumed = information_fields
             else:
+                visible = set(
+                    _lifecycle_contract(self.lifecycle_version)
+                    .phase_spec(self.eligibility_phase)
+                    .visible_fields
+                )
+                information_fields = _FILL_INFORMATION_FIELDS[eligibility]
                 consumed = visible & information_fields
             if consumed:
                 fields = ", ".join(sorted(field.value for field in consumed))
@@ -680,6 +678,9 @@ class CanonicalChildOrderIntent:
         parameters = value["parameters"]
         if not isinstance(parameters, Mapping):
             raise TypeError("parameters must be a mapping")
+        capabilities = value["capabilities"]
+        if not isinstance(capabilities, Sequence) or isinstance(capabilities, str | bytes):
+            raise TypeError("capabilities must be a sequence of ExecutionCapability values")
         return cls(
             child_intent_id=value["child_intent_id"],
             target_intent_id=value["target_intent_id"],
@@ -695,9 +696,7 @@ class CanonicalChildOrderIntent:
             fill_eligibility=FillEligibility(value["fill_eligibility"]),
             time_in_force=TimeInForce(value["time_in_force"]),
             session_policy=SessionPolicy(value["session_policy"]),
-            capabilities=tuple(
-                ExecutionCapability(capability) for capability in value["capabilities"]
-            ),
+            capabilities=tuple(ExecutionCapability(capability) for capability in capabilities),
             reason=IntentReason(value["reason"]),
             lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
         )
@@ -829,6 +828,11 @@ class ExecutionPolicy:
             "allow_partial_fills",
             "bar_path",
         )
+        supported_sessions = value.get("supported_sessions", (SessionPolicy.REGULAR.value,))
+        if not isinstance(supported_sessions, Sequence) or isinstance(
+            supported_sessions, str | bytes
+        ):
+            raise TypeError("supported_sessions must be a sequence of SessionPolicy values")
         return cls(
             policy_id=value["policy_id"],
             market_fill_phase=LifecyclePhase(value["market_fill_phase"]),
@@ -847,10 +851,7 @@ class ExecutionPolicy:
             liquidity_fraction=value["liquidity_fraction"],
             allow_partial_fills=value["allow_partial_fills"],
             bar_path=BarPathPolicy(value["bar_path"]),
-            supported_sessions=tuple(
-                SessionPolicy(session)
-                for session in value.get("supported_sessions", (SessionPolicy.REGULAR.value,))
-            ),
+            supported_sessions=tuple(SessionPolicy(session) for session in supported_sessions),
             lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
         )
 
@@ -1096,7 +1097,7 @@ class PositionRulePolicy:
 
 @dataclass(frozen=True, slots=True)
 class PositionRuleState:
-    """Portable per-rule state with signed fractional excursions."""
+    """Portable rule state with a per-evaluation action and latched trigger reason."""
 
     policy_id: str
     rule_id: str
@@ -1190,9 +1191,17 @@ class PositionRuleState:
             raise ValueError("triggered and complete position rules require an exit reason")
         if self.activation is RuleActivation.COMPLETE and self.remaining_exit_quantity != 0:
             raise ValueError("complete position rules require zero remaining exit quantity")
-        if self.action in {PositionActionType.HOLD, PositionActionType.ADJUST_STOP}:
-            if self.exit_reason is not ExitReason.NONE:
-                raise ValueError("hold and adjust_stop actions require exit reason none")
+        if (
+            self.action is PositionActionType.ADJUST_STOP
+            and self.exit_reason is not ExitReason.NONE
+        ):
+            raise ValueError("adjust_stop action requires exit reason none")
+        if (
+            self.action is PositionActionType.HOLD
+            and self.activation in {RuleActivation.INACTIVE, RuleActivation.ACTIVE}
+            and self.exit_reason is not ExitReason.NONE
+        ):
+            raise ValueError("untriggered hold action requires exit reason none")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible position-rule state."""

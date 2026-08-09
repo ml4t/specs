@@ -124,7 +124,8 @@ that same phase. Cross-session opening fills use `OPENING_AUCTION` explicitly, w
 force and the opening-auction capability.
 `CURRENT_PHASE`, including `IOC` and `FOK`, is available only for evolving `MARKET_EVENT`
 callbacks. Bar-based `INTRABAR` decisions have already observed the completed high and low and
-must use `NEXT_PHASE`.
+must use `NEXT_PHASE`. Engines must call `validate_event_against_phase()` before dispatch so a
+completed event cannot be presented as an evolving callback.
 
 `CanonicalChildOrderIntent` requires both `decision_session` and `effective_session`. An order
 decided before the opening auction uses `eligibility_phase=PRE_OPEN` with

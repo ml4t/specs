@@ -180,6 +180,10 @@ class GapEvidence:
         )
         if self.detected and (self.previous_sequence is None or self.current_sequence is None):
             raise ValueError("detected gap requires previous_sequence and current_sequence")
+        if self.detected and type(self.previous_sequence) is not type(self.current_sequence):
+            raise TypeError("detected gap sequences must have the same type")
+        if self.detected and self.previous_sequence == self.current_sequence:
+            raise ValueError("detected gap sequences must differ")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> GapEvidence:
@@ -385,6 +389,28 @@ class MarketEvent:
             provider_sequence=value.get("provider_sequence"),
             gap=GapEvidence.from_mapping(gap_value) if gap_value is not None else None,
             metadata=metadata,
+        )
+
+
+_EVENT_COMPLETION_BY_PHASE = {
+    LifecyclePhase.INTRABAR: EventCompletion.COMPLETE,
+    LifecyclePhase.CLOSE: EventCompletion.COMPLETE,
+    LifecyclePhase.MARKET_EVENT: EventCompletion.EVOLVING,
+}
+
+
+def validate_event_against_phase(event: MarketEvent, phase: LifecyclePhase) -> None:
+    """Require event completion state to match its portable callback phase."""
+    if not isinstance(event, MarketEvent):
+        raise TypeError("event must be a MarketEvent")
+    phase = LifecyclePhase(phase)
+    expected = _EVENT_COMPLETION_BY_PHASE.get(phase)
+    if expected is None:
+        raise ValueError(f"phase {phase.value!r} does not deliver market events")
+    if event.completion is not expected:
+        raise ValueError(
+            f"phase {phase.value!r} requires {expected.value!r} event completion, "
+            f"received {event.completion.value!r}"
         )
 
 
@@ -757,4 +783,5 @@ __all__ = [
     "lifecycle_schema",
     "negotiate_lifecycle_version",
     "require_historical_strategy_compatibility",
+    "validate_event_against_phase",
 ]

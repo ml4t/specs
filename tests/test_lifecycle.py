@@ -32,6 +32,7 @@ from ml4t.specs import (
     lifecycle_schema,
     negotiate_lifecycle_version,
     require_historical_strategy_compatibility,
+    validate_event_against_phase,
 )
 
 EVENT_TIME = datetime(2026, 8, 8, 14, 30, tzinfo=UTC)
@@ -329,6 +330,16 @@ def test_market_event_normalizes_string_provider_sequence() -> None:
         ({"current_sequence": 1.5}, TypeError, "current_sequence"),
         ({"previous_sequence": ""}, ValueError, "non-empty"),
         ({"current_sequence": -1}, ValueError, "non-negative"),
+        (
+            {"detected": True, "previous_sequence": 10, "current_sequence": "12"},
+            TypeError,
+            "same type",
+        ),
+        (
+            {"detected": True, "previous_sequence": 10, "current_sequence": 10},
+            ValueError,
+            "must differ",
+        ),
     ],
 )
 def test_gap_evidence_validates_sequence_identity(
@@ -355,6 +366,21 @@ def test_market_event_normalizes_string_enums() -> None:
     assert original.version is LifecycleVersion.V1
     assert original.kind is MarketEventKind.BAR
     assert original.completion is EventCompletion.EVOLVING
+
+
+def test_event_completion_must_match_callback_phase() -> None:
+    evolving = event(completion=EventCompletion.EVOLVING)
+    complete = event(completion=EventCompletion.COMPLETE)
+
+    validate_event_against_phase(evolving, LifecyclePhase.MARKET_EVENT)
+    validate_event_against_phase(complete, LifecyclePhase.INTRABAR)
+    validate_event_against_phase(complete, LifecyclePhase.CLOSE)
+    with pytest.raises(ValueError, match="market_event.*requires 'evolving'.*'complete'"):
+        validate_event_against_phase(complete, LifecyclePhase.MARKET_EVENT)
+    with pytest.raises(ValueError, match="run_start.*does not deliver market events"):
+        validate_event_against_phase(complete, LifecyclePhase.RUN_START)
+    with pytest.raises(TypeError, match="event must be a MarketEvent"):
+        validate_event_against_phase(cast("Any", {}), LifecyclePhase.MARKET_EVENT)
 
 
 def test_lifecycle_mappings_report_missing_required_fields() -> None:

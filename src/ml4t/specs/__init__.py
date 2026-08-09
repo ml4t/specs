@@ -70,6 +70,7 @@ from .lifecycle import (
     lifecycle_schema,
     negotiate_lifecycle_version,
     require_historical_strategy_compatibility,
+    validate_event_against_phase,
 )
 from .market_data import (
     FeedSpec,
@@ -150,6 +151,7 @@ __all__ = [
     "serialize_artifact_value",
     "validate_child_against_policy",
     "validate_child_lineage",
+    "validate_event_against_phase",
     "validate_state_against_policy",
     "validate_target_against_rule_policy",
     "write_spec_payload",
