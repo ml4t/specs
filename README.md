@@ -101,8 +101,8 @@ validated payloads, provider sequence or gap evidence, and immutable JSON metada
 `CanonicalTargetIntent` records a strategy decision before order construction.
 `CanonicalChildOrderIntent` records the resulting unsigned order, its target lineage, fill
 decision session, fill session, eligibility phase, time in force, and required execution
-capabilities. The two session fields permit a close decision to schedule a child for a later
-session's opening auction.
+capabilities. `eligibility_phase` is always a phase in `decision_session`. The two session fields
+permit a close decision to schedule a child for a later session's opening auction.
 Targets may schedule an arbitrary future effective session so allocation systems can register
 dated decisions in advance; venue calendars decide whether that date is tradable.
 `ExecutionPolicy` records the assumptions under which an engine or venue executes those orders.

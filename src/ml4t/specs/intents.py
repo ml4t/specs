@@ -459,7 +459,7 @@ def _later_market_fill_phases(
 
 @dataclass(frozen=True, slots=True)
 class CanonicalChildOrderIntent:
-    """Unsigned venue-facing order intent with target lineage."""
+    """Unsigned order whose eligibility phase occurs in its decision session."""
 
     child_intent_id: str
     target_intent_id: str
@@ -1350,8 +1350,6 @@ def validate_child_lineage(target: CanonicalTargetIntent, child: CanonicalChildO
         raise ValueError("child asset is absent from target")
     if child.decision_session != target.effective_session:
         raise ValueError("child decision session does not match target effective session")
-    if child.effective_session > target.effective_session:
-        return
     contract = _lifecycle_contract(target.lifecycle_version)
     target_rank = contract.phase_spec(target.effective_phase).causal_rank
     child_rank = contract.phase_spec(child.eligibility_phase).causal_rank

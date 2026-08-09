@@ -1688,8 +1688,16 @@ def test_child_lineage_validation() -> None:
     with pytest.raises(ValueError, match="decision session"):
         validate_child_lineage(parent, mismatched_decision_session)
 
-    next_session_child = replace(valid, effective_session=date(2026, 8, 11))
+    next_session_child = replace(
+        valid,
+        effective_session=date(2026, 8, 11),
+        eligibility_phase=LifecyclePhase.CLOSE,
+    )
     validate_child_lineage(later_target, next_session_child)
+
+    impossible_next_session_child = replace(valid, effective_session=date(2026, 8, 11))
+    with pytest.raises(ValueError, match="precedes"):
+        validate_child_lineage(later_target, impossible_next_session_child)
 
     market_event_target = target(effective_phase=LifecyclePhase.MARKET_EVENT)
     close_child = child(
