@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
@@ -101,6 +102,18 @@ def test_lifecycle_schema_accepts_only_the_exact_versioned_contract() -> None:
     malformed["phases"][1]["visible_fields"] = ["current_close"]
     with pytest.raises(ValidationError):
         validate(malformed, schema)
+
+
+def test_lifecycle_and_event_records_encode_as_json_and_restore() -> None:
+    contracts = (
+        (LIFECYCLE_V1, LifecycleContract.from_mapping),
+        (event(metadata={"conditions": ["regular"]}), MarketEvent.from_mapping),
+    )
+
+    for original, restore in contracts:
+        decoded = json.loads(json.dumps(original.to_dict()))
+        assert decoded == original.to_dict()
+        assert restore(decoded) == original
 
 
 def test_opening_decisions_cannot_observe_current_close() -> None:

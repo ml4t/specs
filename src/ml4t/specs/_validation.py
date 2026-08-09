@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 def non_empty(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
-    return value
+    return value.strip()
 
 
 def finite(value: object, name: str) -> float:

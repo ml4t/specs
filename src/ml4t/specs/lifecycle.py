@@ -161,7 +161,7 @@ class GapEvidence:
     current_sequence: str | int | None = None
 
     def __post_init__(self) -> None:
-        _non_empty(self.reason, "gap reason")
+        object.__setattr__(self, "reason", _non_empty(self.reason, "gap reason"))
         _provider_sequence(self.previous_sequence, "previous_sequence")
         _provider_sequence(self.current_sequence, "current_sequence")
         if self.detected and (self.previous_sequence is None or self.current_sequence is None):
@@ -285,8 +285,8 @@ class MarketEvent:
         object.__setattr__(self, "receipt_time", _utc(self.receipt_time, "receipt_time"))
         if self.receipt_time < self.event_time:
             raise ValueError("receipt_time must not precede event_time")
-        _non_empty(self.source, "source")
-        _non_empty(self.asset, "asset")
+        object.__setattr__(self, "source", _non_empty(self.source, "source"))
+        object.__setattr__(self, "asset", _non_empty(self.asset, "asset"))
         if not isinstance(self.payload, _PAYLOAD_TYPES[kind]):
             raise TypeError(f"{kind.value} event requires {_PAYLOAD_TYPES[kind].__name__}")
         if self.provider_sequence is None and self.gap is None:
@@ -368,7 +368,7 @@ class LifecyclePhaseSpec:
             "exception_semantics",
             CallbackExceptionSemantics(self.exception_semantics),
         )
-        _non_empty(self.callback, "callback")
+        object.__setattr__(self, "callback", _non_empty(self.callback, "callback"))
         if isinstance(self.causal_rank, bool) or not isinstance(self.causal_rank, int):
             raise TypeError("causal_rank must be an integer")
         if self.causal_rank < 0:

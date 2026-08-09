@@ -200,7 +200,7 @@ class AssetTarget:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "measure", TargetMeasure(self.measure))
-        _non_empty(self.asset, "asset")
+        object.__setattr__(self, "asset", _non_empty(self.asset, "asset"))
         _finite(self.value, "target value")
 
     @classmethod
@@ -233,8 +233,10 @@ class CanonicalTargetIntent:
         object.__setattr__(self, "rounding", RoundingPolicy(self.rounding))
         object.__setattr__(self, "residual", ResidualPolicy(self.residual))
         object.__setattr__(self, "reason", IntentReason(self.reason))
-        _non_empty(self.intent_id, "intent_id")
-        _non_empty(self.idempotency_key, "idempotency_key")
+        object.__setattr__(self, "intent_id", _non_empty(self.intent_id, "intent_id"))
+        object.__setattr__(
+            self, "idempotency_key", _non_empty(self.idempotency_key, "idempotency_key")
+        )
         object.__setattr__(self, "decision_time", _utc(self.decision_time, "decision_time"))
         object.__setattr__(
             self,
@@ -263,7 +265,11 @@ class CanonicalTargetIntent:
         if not 0 <= cash_buffer < 1:
             raise ValueError("cash_buffer must be in [0, 1)")
         if self.position_rule_policy_id is not None:
-            _non_empty(self.position_rule_policy_id, "position_rule_policy_id")
+            object.__setattr__(
+                self,
+                "position_rule_policy_id",
+                _non_empty(self.position_rule_policy_id, "position_rule_policy_id"),
+            )
         object.__setattr__(
             self,
             "lifecycle_version",
@@ -364,12 +370,19 @@ _FILL_ELIGIBILITY_CAPABILITY: dict[FillEligibility, ExecutionCapability | None] 
 }
 
 _FILL_INFORMATION_FIELDS: dict[FillEligibility, frozenset[InformationField]] = {
-    FillEligibility.CURRENT_PHASE: frozenset({InformationField.CURRENT_CLOSE}),
+    FillEligibility.CURRENT_PHASE: frozenset(),
     FillEligibility.NEXT_PHASE: frozenset(),
     FillEligibility.OPENING_AUCTION: frozenset(
         {InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN}
     ),
     FillEligibility.CLOSE_AUCTION: frozenset({InformationField.CURRENT_CLOSE}),
+}
+
+_CURRENT_PHASE_INFORMATION_FIELDS: dict[LifecyclePhase, frozenset[InformationField]] = {
+    LifecyclePhase.OPENING_AUCTION: frozenset(
+        {InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN}
+    ),
+    LifecyclePhase.CLOSE: frozenset({InformationField.CURRENT_CLOSE}),
 }
 
 _ALLOWED_PARAMETERS: dict[OrderType, frozenset[str]] = {
@@ -419,7 +432,7 @@ class CanonicalChildOrderIntent:
             (self.idempotency_key, "idempotency_key"),
             (self.asset, "asset"),
         ):
-            _non_empty(value, name)
+            object.__setattr__(self, name, _non_empty(value, name))
         if _finite(self.quantity, "quantity") <= 0:
             raise ValueError("quantity must be positive and unsigned")
         if not isinstance(self.effective_session, date) or isinstance(
@@ -471,7 +484,12 @@ class CanonicalChildOrderIntent:
                 f"{time_in_force.value} time in force requires current_phase eligibility"
             )
         visible = set(LIFECYCLE_V1.phase_spec(self.eligibility_phase).visible_fields)
-        consumed = visible & _FILL_INFORMATION_FIELDS[eligibility]
+        information_fields = _FILL_INFORMATION_FIELDS[eligibility]
+        if eligibility is FillEligibility.CURRENT_PHASE:
+            information_fields = _CURRENT_PHASE_INFORMATION_FIELDS.get(
+                self.eligibility_phase, frozenset()
+            )
+        consumed = visible & information_fields
         if consumed:
             fields = ", ".join(sorted(field.value for field in consumed))
             raise ValueError(
@@ -595,7 +613,7 @@ class ExecutionPolicy:
         ):
             object.__setattr__(self, name, ExecutionBehavior(getattr(self, name)))
         object.__setattr__(self, "bar_path", BarPathPolicy(self.bar_path))
-        _non_empty(self.policy_id, "policy_id")
+        object.__setattr__(self, "policy_id", _non_empty(self.policy_id, "policy_id"))
         if self.market_fill_phase not in {
             LifecyclePhase.OPENING_AUCTION,
             LifecyclePhase.INTRABAR,
@@ -711,15 +729,19 @@ class PositionRuleDefinition:
     def __post_init__(self) -> None:
         object.__setattr__(self, "rule_type", PositionRuleType(self.rule_type))
         parameters = tuple((name, value) for name, value in self.parameters)
-        children = tuple(self.children)
+        children = tuple(_non_empty(child, "rule child") for child in self.children)
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "children", children)
         if self.composition is not None:
             object.__setattr__(self, "composition", RuleComposition(self.composition))
-        _non_empty(self.rule_id, "rule_id")
+        object.__setattr__(self, "rule_id", _non_empty(self.rule_id, "rule_id"))
+        parameters = tuple(
+            (_non_empty(name, "rule parameter name"), value) for name, value in parameters
+        )
+        object.__setattr__(self, "parameters", parameters)
         names = tuple(name for name, _ in parameters)
-        if len(names) != len(set(names)) or any(not name for name in names):
-            raise ValueError("rule parameter names must be non-empty and unique")
+        if len(names) != len(set(names)):
+            raise ValueError("rule parameter names must be unique")
         for name, value in self.parameters:
             _finite(value, f"rule parameter {name}")
         is_composite = self.rule_type is PositionRuleType.COMPOSITE
@@ -779,8 +801,8 @@ class PositionRulePolicy:
     def __post_init__(self) -> None:
         object.__setattr__(self, "rules", tuple(self.rules))
         object.__setattr__(self, "evaluation_mode", EvaluationMode(self.evaluation_mode))
-        _non_empty(self.policy_id, "policy_id")
-        _non_empty(self.root_rule_id, "root_rule_id")
+        object.__setattr__(self, "policy_id", _non_empty(self.policy_id, "policy_id"))
+        object.__setattr__(self, "root_rule_id", _non_empty(self.root_rule_id, "root_rule_id"))
         rule_ids = tuple(rule.rule_id for rule in self.rules)
         if len(rule_ids) != len(set(rule_ids)):
             raise ValueError("position rule ids must be unique")
@@ -866,7 +888,7 @@ class PositionRuleState:
             (self.asset, "asset"),
             (self.idempotency_key, "idempotency_key"),
         ):
-            _non_empty(value, name)
+            object.__setattr__(self, name, _non_empty(value, name))
         object.__setattr__(self, "entry_time", _utc(self.entry_time, "entry_time"))
         for name in (
             "entry_price",
@@ -1050,6 +1072,6 @@ __all__ = [
     "canonical_intent_fixture",
     "compare_child_intents",
     "compare_target_intents",
-    "validate_child_lineage",
     "validate_child_against_policy",
+    "validate_child_lineage",
 ]

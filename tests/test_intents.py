@@ -143,6 +143,7 @@ def rule_state(**overrides: Any) -> PositionRuleState:
 def test_golden_fixture_loads_unchanged_and_round_trips() -> None:
     fixture = canonical_intent_fixture()
     assert fixture == json.loads(FIXTURE_PATH.read_text())
+    assert json.loads(json.dumps(fixture)) == fixture
     restored_target = CanonicalTargetIntent.from_mapping(fixture["target"])
     restored_child = CanonicalChildOrderIntent.from_mapping(fixture["child"])
 
@@ -444,6 +445,16 @@ def test_child_capability_order_is_canonical() -> None:
                 "fill_eligibility": FillEligibility.OPENING_AUCTION,
                 "time_in_force": TimeInForce.OPG,
                 "capabilities": (ExecutionCapability.OPENING_AUCTION,),
+            },
+            ValueError,
+            "current_open",
+        ),
+        (
+            {
+                "eligibility_phase": LifecyclePhase.OPENING_AUCTION,
+                "fill_eligibility": FillEligibility.CURRENT_PHASE,
+                "time_in_force": TimeInForce.IOC,
+                "capabilities": (),
             },
             ValueError,
             "current_open",
@@ -758,6 +769,23 @@ def test_position_rule_definition_and_policy_round_trip() -> None:
     assert PositionRuleDefinition.from_mapping(stop.to_dict()) == stop
 
 
+def test_intent_contract_records_encode_as_json_and_restore() -> None:
+    rule = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS)
+    rule_policy = PositionRulePolicy("rules-1", "root", (rule,), EvaluationMode.CLIENT)
+    contracts = (
+        (target(), CanonicalTargetIntent.from_mapping),
+        (child(), CanonicalChildOrderIntent.from_mapping),
+        (execution_policy(), ExecutionPolicy.from_mapping),
+        (rule_policy, PositionRulePolicy.from_mapping),
+        (rule_state(), PositionRuleState.from_mapping),
+    )
+
+    for original, restore in contracts:
+        decoded = json.loads(json.dumps(original.to_dict()))
+        assert decoded == original.to_dict()
+        assert restore(decoded) == original
+
+
 def test_rule_contracts_materialize_mutable_collections() -> None:
     leaf = PositionRuleDefinition(
         "leaf",
@@ -811,7 +839,13 @@ def test_position_rule_definition_mapping_rejects_malformed_collections(
             lambda: PositionRuleDefinition(
                 "rule", PositionRuleType.STOP_LOSS, parameters=(("", 1),)
             ),
-            "names",
+            "parameter name",
+        ),
+        (
+            lambda: PositionRuleDefinition(
+                "rule", PositionRuleType.STOP_LOSS, parameters=((cast("Any", 1), 1),)
+            ),
+            "parameter name",
         ),
         (
             lambda: PositionRuleDefinition(
@@ -1050,6 +1084,26 @@ def test_direct_construction_normalizes_string_enum_values() -> None:
     assert CanonicalChildOrderIntent.from_mapping(direct_child.to_dict()) == direct_child
     assert ExecutionPolicy.from_mapping(direct_policy.to_dict()) == direct_policy
     assert PositionRuleState.from_mapping(direct_state.to_dict()) == direct_state
+
+
+def test_contract_identifiers_are_whitespace_canonicalized() -> None:
+    direct_target = target(
+        intent_id=" target-1 ",
+        idempotency_key=" target-key ",
+        position_rule_policy_id=" rules-1 ",
+        targets=(AssetTarget(" SPY ", TargetMeasure.WEIGHT, 0.5),),
+    )
+    direct_child = child(
+        child_intent_id=" child-1 ",
+        target_intent_id=" target-1 ",
+        idempotency_key=" child-key ",
+        asset=" SPY ",
+    )
+
+    assert direct_target.intent_id == "target-1"
+    assert direct_target.targets[0].asset == "SPY"
+    assert direct_child.target_intent_id == direct_target.intent_id
+    validate_child_lineage(direct_target, direct_child)
 
 
 def test_child_lineage_validation() -> None:
