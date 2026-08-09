@@ -11,6 +11,7 @@ from typing import Any
 
 from ._validation import finite as _finite
 from ._validation import non_empty as _non_empty
+from ._validation import require_fields as _require_fields
 from ._validation import utc as _utc
 from .lifecycle import (
     LIFECYCLE_V1,
@@ -218,6 +219,7 @@ class AssetTarget:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssetTarget:
+        _require_fields(value, "asset", "measure", "value")
         return cls(value["asset"], TargetMeasure(value["measure"]), value["value"])
 
 
@@ -319,6 +321,21 @@ class CanonicalTargetIntent:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> CanonicalTargetIntent:
         """Restore and validate a canonical target."""
+        _require_fields(
+            value,
+            "intent_id",
+            "decision_time",
+            "information_cutoff",
+            "effective_session",
+            "effective_phase",
+            "targets",
+            "idempotency_key",
+            "measure",
+            "cash_buffer",
+            "rounding",
+            "residual",
+            "reason",
+        )
         targets = value["targets"]
         if not isinstance(targets, Sequence) or isinstance(targets, str | bytes):
             raise TypeError("targets must be a sequence")
@@ -337,7 +354,7 @@ class CanonicalTargetIntent:
             rounding=RoundingPolicy(value["rounding"]),
             residual=ResidualPolicy(value["residual"]),
             reason=IntentReason(value["reason"]),
-            lifecycle_version=value["lifecycle_version"],
+            lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
             position_rule_policy_id=value.get("position_rule_policy_id"),
         )
 
@@ -639,6 +656,25 @@ class CanonicalChildOrderIntent:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> CanonicalChildOrderIntent:
         """Restore and validate a child intent."""
+        _require_fields(
+            value,
+            "child_intent_id",
+            "target_intent_id",
+            "idempotency_key",
+            "asset",
+            "side",
+            "quantity",
+            "order_type",
+            "parameters",
+            "decision_session",
+            "effective_session",
+            "eligibility_phase",
+            "fill_eligibility",
+            "time_in_force",
+            "session_policy",
+            "capabilities",
+            "reason",
+        )
         parameters = value["parameters"]
         if not isinstance(parameters, Mapping):
             raise TypeError("parameters must be a mapping")
@@ -661,7 +697,7 @@ class CanonicalChildOrderIntent:
                 ExecutionCapability(capability) for capability in value["capabilities"]
             ),
             reason=IntentReason(value["reason"]),
-            lifecycle_version=value["lifecycle_version"],
+            lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
         )
 
 
@@ -771,6 +807,26 @@ class ExecutionPolicy:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> ExecutionPolicy:
         """Restore and validate an execution policy."""
+        _require_fields(
+            value,
+            "policy_id",
+            "market_fill_phase",
+            "opening_auction",
+            "close_auction",
+            "limit",
+            "stop",
+            "stop_limit",
+            "trailing",
+            "contingent",
+            "fee_bps",
+            "slippage_bps",
+            "spread_bps",
+            "impact_bps",
+            "latency_ms",
+            "liquidity_fraction",
+            "allow_partial_fills",
+            "bar_path",
+        )
         return cls(
             policy_id=value["policy_id"],
             market_fill_phase=LifecyclePhase(value["market_fill_phase"]),
@@ -790,9 +846,10 @@ class ExecutionPolicy:
             allow_partial_fills=value["allow_partial_fills"],
             bar_path=BarPathPolicy(value["bar_path"]),
             supported_sessions=tuple(
-                SessionPolicy(session) for session in value["supported_sessions"]
+                SessionPolicy(session)
+                for session in value.get("supported_sessions", (SessionPolicy.REGULAR.value,))
             ),
-            lifecycle_version=value["lifecycle_version"],
+            lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
         )
 
 
@@ -881,8 +938,13 @@ class PositionRuleDefinition:
         ):
             raise TypeError("each parameter must be a two-item name-value sequence")
         parameters = tuple(
-            (_non_empty(name, "rule parameter name"), _finite(value, f"rule parameter {name}"))
-            for name, value in raw_parameters
+            sorted(
+                (
+                    _non_empty(name, "rule parameter name"),
+                    _finite(value, f"rule parameter {name}"),
+                )
+                for name, value in raw_parameters
+            )
         )
         try:
             raw_children = tuple(self.children)
@@ -918,6 +980,7 @@ class PositionRuleDefinition:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> PositionRuleDefinition:
         """Restore and validate a rule definition."""
+        _require_fields(value, "rule_id", "rule_type")
         raw_parameters = value.get("parameters", ())
         if not isinstance(raw_parameters, Sequence) or isinstance(raw_parameters, str | bytes):
             raise TypeError("parameters must be a sequence")
@@ -962,7 +1025,7 @@ class PositionRulePolicy:
             raise TypeError("rules must be an iterable of PositionRuleDefinition values") from None
         if any(not isinstance(rule, PositionRuleDefinition) for rule in rules):
             raise TypeError("each rule must be a PositionRuleDefinition")
-        object.__setattr__(self, "rules", rules)
+        object.__setattr__(self, "rules", tuple(sorted(rules, key=lambda rule: rule.rule_id)))
         object.__setattr__(self, "evaluation_mode", EvaluationMode(self.evaluation_mode))
         object.__setattr__(self, "policy_id", _non_empty(self.policy_id, "policy_id"))
         object.__setattr__(self, "root_rule_id", _non_empty(self.root_rule_id, "root_rule_id"))
@@ -1014,6 +1077,7 @@ class PositionRulePolicy:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> PositionRulePolicy:
         """Restore and validate a position-rule policy."""
+        _require_fields(value, "policy_id", "root_rule_id", "rules", "evaluation_mode")
         raw_rules = value["rules"]
         if not isinstance(raw_rules, Sequence) or isinstance(raw_rules, str | bytes):
             raise TypeError("rules must be a sequence")
@@ -1024,7 +1088,7 @@ class PositionRulePolicy:
             root_rule_id=value["root_rule_id"],
             rules=tuple(PositionRuleDefinition.from_mapping(rule) for rule in raw_rules),
             evaluation_mode=EvaluationMode(value["evaluation_mode"]),
-            lifecycle_version=value["lifecycle_version"],
+            lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
         )
 
 
@@ -1084,6 +1148,8 @@ class PositionRuleState:
             raise ValueError("entry_price must be non-zero for fractional excursions")
         if not 0 <= self.remaining_exit_quantity <= self.entry_quantity:
             raise ValueError("remaining_exit_quantity must be between zero and entry_quantity")
+        if self.remaining_exit_quantity == 0 and self.activation is not RuleActivation.COMPLETE:
+            raise ValueError("zero remaining exit quantity requires a complete position rule")
         if self.low_water_mark > self.high_water_mark:
             raise ValueError("low_water_mark must not exceed high_water_mark")
         if not self.low_water_mark <= self.entry_price <= self.high_water_mark:
@@ -1152,6 +1218,26 @@ class PositionRuleState:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> PositionRuleState:
         """Restore and validate position-rule state."""
+        _require_fields(
+            value,
+            "policy_id",
+            "rule_id",
+            "asset",
+            "activation",
+            "entry_time",
+            "entry_side",
+            "entry_price",
+            "entry_quantity",
+            "high_water_mark",
+            "low_water_mark",
+            "max_favorable_excursion",
+            "max_adverse_excursion",
+            "remaining_exit_quantity",
+            "idempotency_key",
+            "action",
+            "exit_reason",
+            "evaluation_mode",
+        )
         return cls(
             policy_id=value["policy_id"],
             rule_id=value["rule_id"],
@@ -1170,7 +1256,7 @@ class PositionRuleState:
             action=PositionActionType(value["action"]),
             exit_reason=ExitReason(value["exit_reason"]),
             evaluation_mode=EvaluationMode(value["evaluation_mode"]),
-            lifecycle_version=value["lifecycle_version"],
+            lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
         )
 
 

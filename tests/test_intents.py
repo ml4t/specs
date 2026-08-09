@@ -685,6 +685,16 @@ def test_evolving_market_events_support_immediate_time_in_force(
     assert order.time_in_force is time_in_force
 
 
+def test_completed_intrabar_data_cannot_drive_immediate_fill() -> None:
+    with pytest.raises(ValueError, match="current_high, current_low"):
+        child(
+            eligibility_phase=LifecyclePhase.INTRABAR,
+            fill_eligibility=FillEligibility.CURRENT_PHASE,
+            time_in_force=TimeInForce.IOC,
+            capabilities=(),
+        )
+
+
 @pytest.mark.parametrize(
     ("order_type", "parameters", "capabilities", "irrelevant"),
     [
@@ -1007,6 +1017,17 @@ def test_position_rule_definition_and_policy_round_trip() -> None:
     assert PositionRulePolicy.from_mapping(original.to_dict()) == original
     assert PositionRuleDefinition.from_mapping(stop.to_dict()) == stop
 
+    reordered_stop = PositionRuleDefinition(
+        "stop",
+        PositionRuleType.STOP_LOSS,
+        parameters=(("z", 1), ("a", 2)),
+    )
+    assert reordered_stop.parameters == (("a", 2.0), ("z", 1.0))
+    reordered_policy = PositionRulePolicy(
+        "rules-1", "root", tuple(reversed(original.rules)), EvaluationMode.CLIENT
+    )
+    assert reordered_policy == original
+
 
 def test_intent_contract_records_encode_as_json_and_restore() -> None:
     rule = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS)
@@ -1023,6 +1044,45 @@ def test_intent_contract_records_encode_as_json_and_restore() -> None:
         decoded = json.loads(json.dumps(original.to_dict()))
         assert decoded == original.to_dict()
         assert restore(decoded) == original
+
+
+@pytest.mark.parametrize(
+    ("restore", "record", "field"),
+    [
+        (
+            AssetTarget.from_mapping,
+            AssetTarget("SPY", TargetMeasure.WEIGHT, 0.5).to_dict(),
+            "asset",
+        ),
+        (CanonicalTargetIntent.from_mapping, target().to_dict(), "intent_id"),
+        (CanonicalChildOrderIntent.from_mapping, child().to_dict(), "child_intent_id"),
+        (ExecutionPolicy.from_mapping, execution_policy().to_dict(), "policy_id"),
+        (
+            PositionRuleDefinition.from_mapping,
+            PositionRuleDefinition("stop", PositionRuleType.STOP_LOSS).to_dict(),
+            "rule_id",
+        ),
+        (
+            PositionRulePolicy.from_mapping,
+            PositionRulePolicy(
+                "rules-1",
+                "stop",
+                (PositionRuleDefinition("stop", PositionRuleType.STOP_LOSS),),
+                EvaluationMode.CLIENT,
+            ).to_dict(),
+            "policy_id",
+        ),
+        (PositionRuleState.from_mapping, rule_state().to_dict(), "rule_id"),
+    ],
+)
+def test_intent_mapping_missing_required_fields_are_contract_errors(
+    restore: Any, record: dict[str, Any], field: str
+) -> None:
+    malformed = dict(record)
+    malformed.pop(field)
+
+    with pytest.raises(ValueError, match=f"missing required fields: {field}"):
+        restore(malformed)
 
 
 def test_rule_contracts_materialize_mutable_collections() -> None:
@@ -1423,6 +1483,17 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
         ({"entry_quantity": 0}, ValueError, "entry_quantity"),
         ({"remaining_exit_quantity": -1}, ValueError, "between zero"),
         ({"remaining_exit_quantity": 11}, ValueError, "between zero"),
+        ({"remaining_exit_quantity": 0}, ValueError, "requires a complete"),
+        (
+            {
+                "activation": RuleActivation.TRIGGERED,
+                "remaining_exit_quantity": 0,
+                "action": PositionActionType.EXIT_FULL,
+                "exit_reason": ExitReason.STOP_LOSS,
+            },
+            ValueError,
+            "requires a complete",
+        ),
         ({"low_water_mark": 111}, ValueError, "must not exceed"),
         ({"high_water_mark": 99}, ValueError, "entry_price must be between"),
         ({"low_water_mark": 101}, ValueError, "entry_price must be between"),

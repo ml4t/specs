@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from datetime import UTC, datetime
+
+
+def require_fields(value: Mapping[str, object], *names: str) -> None:
+    missing = sorted(name for name in names if name not in value)
+    if missing:
+        raise ValueError(f"missing required fields: {', '.join(missing)}")
 
 
 def non_empty(value: object, name: str) -> str:

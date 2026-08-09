@@ -327,6 +327,31 @@ def test_market_event_normalizes_string_enums() -> None:
     assert original.completion is EventCompletion.EVOLVING
 
 
+def test_lifecycle_mappings_report_missing_required_fields() -> None:
+    with pytest.raises(ValueError, match="missing required fields: reason"):
+        GapEvidence.from_mapping({"detected": False})
+
+    event_record = event().to_dict()
+    event_record.pop("source")
+    with pytest.raises(ValueError, match="missing required fields: source"):
+        MarketEvent.from_mapping(event_record)
+
+    contract_record = LIFECYCLE_V1.to_dict()
+    contract_record.pop("version")
+    with pytest.raises(ValueError, match="missing required fields: version"):
+        LifecycleContract.from_mapping(contract_record)
+
+
+def test_lifecycle_mapping_defaults_new_optional_phase_fields() -> None:
+    contract_record = LIFECYCLE_V1.to_dict()
+    for phase in contract_record["phases"]:
+        phase.pop("current_phase_fill_fields")
+
+    restored = LifecycleContract.from_mapping(contract_record)
+
+    assert all(not phase.current_phase_fill_fields for phase in restored.phases)
+
+
 @pytest.mark.parametrize(
     ("overrides", "error", "message"),
     [

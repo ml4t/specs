@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 
 from ._validation import finite as _finite
 from ._validation import non_empty as _non_empty
+from ._validation import require_fields as _require_fields
 from ._validation import utc as _utc
 
 
@@ -182,6 +183,7 @@ class GapEvidence:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> GapEvidence:
+        _require_fields(value, "detected", "reason")
         return cls(
             detected=value["detected"],
             reason=value["reason"],
@@ -351,6 +353,17 @@ class MarketEvent:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> MarketEvent:
         """Restore and validate an event record."""
+        _require_fields(
+            value,
+            "version",
+            "event_time",
+            "receipt_time",
+            "kind",
+            "completion",
+            "source",
+            "asset",
+            "payload",
+        )
         kind = MarketEventKind(value["kind"])
         payload_value = value["payload"]
         if not isinstance(payload_value, Mapping):
@@ -484,6 +497,7 @@ class LifecycleContract:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> LifecycleContract:
         """Restore and validate a lifecycle specification."""
+        _require_fields(value, "version", "phases")
         version = negotiate_lifecycle_version(value["version"])
         raw_phases = value["phases"]
         if not isinstance(raw_phases, Sequence) or isinstance(raw_phases, str | bytes):
@@ -500,7 +514,7 @@ class LifecycleContract:
                 exception_semantics=CallbackExceptionSemantics(raw["exception_semantics"]),
                 causal_rank=raw["causal_rank"],
                 current_phase_fill_fields=tuple(
-                    InformationField(field) for field in raw["current_phase_fill_fields"]
+                    InformationField(field) for field in raw.get("current_phase_fill_fields", ())
                 ),
             )
             for raw in raw_phases

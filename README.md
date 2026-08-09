@@ -122,6 +122,9 @@ execution behavior disabled by the selected policy.
 For intraday strategies, `NEXT_PHASE` from `INTRABAR` or `MARKET_EVENT` means the next event in
 that same phase. Cross-session opening fills use `OPENING_AUCTION` explicitly, with `OPG` time in
 force and the opening-auction capability.
+`CURRENT_PHASE`, including `IOC` and `FOK`, is available only for evolving `MARKET_EVENT`
+callbacks. Bar-based `INTRABAR` decisions have already observed the completed high and low and
+must use `NEXT_PHASE`.
 
 `CanonicalChildOrderIntent` requires both `decision_session` and `effective_session`. An order
 decided before the opening auction uses `eligibility_phase=PRE_OPEN` with
