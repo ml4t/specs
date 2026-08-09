@@ -131,15 +131,31 @@ def test_write_spec_payload_preserves_existing_permissions(tmp_path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX permission bits")
-def test_write_spec_payload_applies_umask_to_new_files(
+def test_write_spec_payload_applies_umask_to_new_files(tmp_path) -> None:
+    path = tmp_path / "market_data.json"
+
+    previous_umask = os.umask(0o077)
+    try:
+        write_spec_payload({"artifact_id": "prices"}, path)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_write_spec_payload_retries_temporary_name_collisions(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(spec_io, "_new_file_mode", lambda: 0o600)
+    tokens = iter(("collision", "available"))
+    monkeypatch.setattr(spec_io, "token_hex", lambda _length: next(tokens))
     path = tmp_path / "market_data.json"
+    collision = tmp_path / ".market_data.json.collision"
+    collision.write_text("occupied")
 
     write_spec_payload({"artifact_id": "prices"}, path)
 
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert read_spec_payload(path) == {"artifact_id": "prices"}
+    assert collision.read_text() == "occupied"
 
 
 def test_spec_io_supports_yml_and_empty_documents(tmp_path) -> None:
@@ -166,7 +182,7 @@ def test_write_spec_payload_handles_temporary_file_creation_failure(
     def fail_to_create(*_args, **_kwargs):
         raise OSError("no temporary file")
 
-    monkeypatch.setattr(spec_io, "NamedTemporaryFile", fail_to_create)
+    monkeypatch.setattr(spec_io, "_open_temporary_file", fail_to_create)
     path = tmp_path / "market_data.json"
 
     with pytest.raises(OSError, match="no temporary file"):

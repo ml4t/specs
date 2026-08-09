@@ -7,16 +7,14 @@ import os
 import stat
 from collections.abc import Mapping
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-from threading import Lock
-from typing import Any
+from secrets import token_hex
+from typing import Any, TextIO
 
 import yaml
 
 from .base import ArtifactSpec
 
 _SUPPORTED_SUFFIXES = frozenset({".json", ".yaml", ".yml"})
-_UMASK_LOCK = Lock()
 
 
 def _validated_suffix(path: Path) -> str:
@@ -33,18 +31,20 @@ def _normalize_mapping(data: Any) -> dict[str, Any]:
     return {str(key): value for key, value in data.items()}
 
 
-def _new_file_mode() -> int:
-    with _UMASK_LOCK:
-        current_umask = os.umask(0)
-        os.umask(current_umask)
-    return 0o666 & ~current_umask
-
-
-def _destination_mode(path: Path) -> int:
+def _destination_mode(path: Path) -> int | None:
     try:
         return stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
-        return _new_file_mode()
+        return None
+
+
+def _open_temporary_file(destination: Path) -> tuple[TextIO, Path]:
+    while True:
+        temporary_path = destination.parent / f".{destination.name}.{token_hex(8)}"
+        try:
+            return temporary_path.open("x", encoding="utf-8"), temporary_path
+        except FileExistsError:
+            continue
 
 
 def read_spec_payload(path_or_mapping: str | Path | Mapping[Any, Any]) -> dict[str, Any]:
@@ -70,20 +70,17 @@ def write_spec_payload(payload: Mapping[Any, Any] | ArtifactSpec, path: str | Pa
     destination_mode = _destination_mode(dest)
     temporary_path: Path | None = None
     try:
-        with NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=dest.parent,
-            prefix=f".{dest.name}.",
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
+        temporary, temporary_path = _open_temporary_file(dest)
+        with temporary:
             if suffix == ".json":
                 json.dump(normalized, temporary, indent=2)
                 temporary.write("\n")
             else:
                 yaml.safe_dump(normalized, temporary, sort_keys=False)
-        temporary_path.chmod(destination_mode)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        if destination_mode is not None:
+            temporary_path.chmod(destination_mode)
         temporary_path.replace(dest)
     except Exception:
         if temporary_path is not None:
