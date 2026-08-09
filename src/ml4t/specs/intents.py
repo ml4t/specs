@@ -203,6 +203,10 @@ class AssetTarget:
         object.__setattr__(self, "asset", _non_empty(self.asset, "asset"))
         _finite(self.value, "target value")
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible asset target."""
+        return {"asset": self.asset, "measure": self.measure.value, "value": self.value}
+
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssetTarget:
         return cls(value["asset"], TargetMeasure(value["measure"]), value["value"])
@@ -284,10 +288,7 @@ class CanonicalTargetIntent:
             "information_cutoff": self.information_cutoff.isoformat(),
             "effective_session": self.effective_session.isoformat(),
             "effective_phase": self.effective_phase.value,
-            "targets": [
-                {"asset": target.asset, "measure": target.measure.value, "value": target.value}
-                for target in self.targets
-            ],
+            "targets": [target.to_dict() for target in self.targets],
             "idempotency_key": self.idempotency_key,
             "measure": self.measure.value,
             "cash_buffer": self.cash_buffer,
@@ -304,6 +305,8 @@ class CanonicalTargetIntent:
         targets = value["targets"]
         if not isinstance(targets, Sequence) or isinstance(targets, str | bytes):
             raise TypeError("targets must be a sequence")
+        if any(not isinstance(target, Mapping) for target in targets):
+            raise TypeError("each target must be a mapping")
         return cls(
             intent_id=value["intent_id"],
             decision_time=datetime.fromisoformat(value["decision_time"]),
@@ -714,6 +717,20 @@ def validate_child_against_policy(
         and policy.contingent is ExecutionBehavior.DISABLED
     ):
         raise ValueError("execution policy disables contingent orders")
+    if child.order_type is OrderType.MARKET and child.fill_eligibility in {
+        FillEligibility.CURRENT_PHASE,
+        FillEligibility.NEXT_PHASE,
+    }:
+        fill_phase = child.eligibility_phase
+        if child.fill_eligibility is FillEligibility.NEXT_PHASE:
+            phases = tuple(LifecyclePhase)
+            phase_index = phases.index(fill_phase)
+            fill_phase = phases[phase_index + 1]
+        if fill_phase is not policy.market_fill_phase:
+            raise ValueError(
+                f"market order fills in {fill_phase.value}, but policy requires "
+                f"{policy.market_fill_phase.value}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -728,17 +745,15 @@ class PositionRuleDefinition:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rule_type", PositionRuleType(self.rule_type))
-        parameters = tuple((name, value) for name, value in self.parameters)
+        parameters = tuple(
+            (_non_empty(name, "rule parameter name"), value) for name, value in self.parameters
+        )
         children = tuple(_non_empty(child, "rule child") for child in self.children)
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "children", children)
         if self.composition is not None:
             object.__setattr__(self, "composition", RuleComposition(self.composition))
         object.__setattr__(self, "rule_id", _non_empty(self.rule_id, "rule_id"))
-        parameters = tuple(
-            (_non_empty(name, "rule parameter name"), value) for name, value in parameters
-        )
-        object.__setattr__(self, "parameters", parameters)
         names = tuple(name for name, _ in parameters)
         if len(names) != len(set(names)):
             raise ValueError("rule parameter names must be unique")

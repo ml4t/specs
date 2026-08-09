@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime
 from enum import StrEnum
 from types import MappingProxyType
@@ -268,7 +269,7 @@ class MarketEvent:
     payload: MarketEventPayload
     provider_sequence: str | int | None = None
     gap: GapEvidence | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = dataclass_field(default_factory=dict)
 
     def __post_init__(self) -> None:
         version = negotiate_lifecycle_version(self.version)

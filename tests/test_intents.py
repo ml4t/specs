@@ -267,14 +267,18 @@ def test_asset_target_rejects_nonfinite_value(value: float) -> None:
 
 
 def test_asset_target_mapping_and_invalid_target_collections() -> None:
-    assert AssetTarget.from_mapping(
-        {"asset": "SPY", "measure": "weight", "value": 0.5}
-    ) == AssetTarget("SPY", TargetMeasure.WEIGHT, 0.5)
+    asset_target = AssetTarget("SPY", TargetMeasure.WEIGHT, 0.5)
+    assert AssetTarget.from_mapping(asset_target.to_dict()) == asset_target
     record = target().to_dict()
     for invalid in ("targets", 1):
         record["targets"] = invalid
         with pytest.raises(TypeError, match="targets"):
             CanonicalTargetIntent.from_mapping(record)
+
+    record = target().to_dict()
+    record["targets"] = [["SPY", "weight", 0.5]]
+    with pytest.raises(TypeError, match="each target"):
+        CanonicalTargetIntent.from_mapping(record)
 
 
 @pytest.mark.parametrize(
@@ -739,6 +743,28 @@ def test_child_must_be_supported_by_execution_policy() -> None:
     )
     with pytest.raises(ValueError, match="contingent"):
         validate_child_against_policy(execution_policy(), contingent_child)
+
+
+def test_market_child_fill_phase_must_match_execution_policy() -> None:
+    current_phase_child = child(
+        eligibility_phase=LifecyclePhase.INTRABAR,
+        fill_eligibility=FillEligibility.CURRENT_PHASE,
+        time_in_force=TimeInForce.IOC,
+        capabilities=(),
+    )
+    next_phase_child = child(
+        eligibility_phase=LifecyclePhase.PRE_OPEN,
+        fill_eligibility=FillEligibility.NEXT_PHASE,
+        time_in_force=TimeInForce.DAY,
+        capabilities=(),
+    )
+
+    validate_child_against_policy(
+        execution_policy(market_fill_phase=LifecyclePhase.INTRABAR), current_phase_child
+    )
+    validate_child_against_policy(execution_policy(), next_phase_child)
+    with pytest.raises(ValueError, match="intrabar.*opening_auction"):
+        validate_child_against_policy(execution_policy(), current_phase_child)
 
 
 def test_position_rule_definition_and_policy_round_trip() -> None:
