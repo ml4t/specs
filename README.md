@@ -111,6 +111,8 @@ dated decisions in advance; venue calendars decide whether that date is tradable
 portable and resumable. Persist one `PositionRuleState` per `rule_id` that carries runtime state,
 including composite parents and stateful leaves. Its remaining quantity is post-action; partial
 exit quantity and adjusted stop price are stored with the latest action.
+`SCALED_EXIT` sizes an exit order below the open position quantity; it does not require the venue
+to partially fill that smaller order, so it is independent of `allow_partial_fills`.
 
 These contracts serialize to JSON-compatible mappings. Their comparison helpers report exact
 field-level differences, including generated identities and timestamps. Callers comparing two

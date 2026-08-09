@@ -400,6 +400,7 @@ class MarketEvent:
 
 
 _EVENT_COMPLETION_BY_PHASE = {
+    LifecyclePhase.OPENING_AUCTION: EventCompletion.COMPLETE,
     LifecyclePhase.INTRABAR: EventCompletion.COMPLETE,
     LifecyclePhase.CLOSE: EventCompletion.COMPLETE,
     LifecyclePhase.MARKET_EVENT: EventCompletion.EVOLVING,

@@ -378,6 +378,7 @@ def test_event_completion_must_match_callback_phase() -> None:
     complete = event(completion=EventCompletion.COMPLETE)
 
     validate_event_against_phase(evolving, LifecyclePhase.MARKET_EVENT)
+    validate_event_against_phase(complete, LifecyclePhase.OPENING_AUCTION)
     validate_event_against_phase(complete, LifecyclePhase.INTRABAR)
     validate_event_against_phase(complete, LifecyclePhase.CLOSE)
     with pytest.raises(ValueError, match="market_event.*requires 'evolving'.*'complete'"):

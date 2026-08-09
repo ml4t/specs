@@ -1211,6 +1211,12 @@ class PositionRuleState:
             raise ValueError("triggered and complete position rules require an exit reason")
         if self.activation is RuleActivation.COMPLETE and self.remaining_exit_quantity != 0:
             raise ValueError("complete position rules require zero remaining exit quantity")
+        if self.action is PositionActionType.EXIT_FULL and (
+            self.activation is not RuleActivation.COMPLETE or self.remaining_exit_quantity != 0
+        ):
+            raise ValueError(
+                "exit_full action requires a complete rule with zero remaining quantity"
+            )
         if self.action is PositionActionType.EXIT_PARTIAL:
             if self.action_quantity is None:
                 raise ValueError("exit_partial action requires action_quantity")
@@ -1286,8 +1292,6 @@ class PositionRuleState:
             "action",
             "exit_reason",
             "evaluation_mode",
-            "action_quantity",
-            "adjusted_stop_price",
         )
         return cls(
             policy_id=value["policy_id"],
@@ -1307,8 +1311,8 @@ class PositionRuleState:
             action=PositionActionType(value["action"]),
             exit_reason=ExitReason(value["exit_reason"]),
             evaluation_mode=EvaluationMode(value["evaluation_mode"]),
-            action_quantity=value["action_quantity"],
-            adjusted_stop_price=value["adjusted_stop_price"],
+            action_quantity=value.get("action_quantity"),
+            adjusted_stop_price=value.get("adjusted_stop_price"),
             lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
         )
 

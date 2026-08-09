@@ -1471,7 +1471,8 @@ def test_position_rule_state_and_target_must_match_policy() -> None:
         validate_state_against_policy(mismatched_policy, state)
 
     wrong_reason = rule_state(
-        activation=RuleActivation.TRIGGERED,
+        activation=RuleActivation.COMPLETE,
+        remaining_exit_quantity=0,
         action=PositionActionType.EXIT_FULL,
         exit_reason=ExitReason.TAKE_PROFIT,
     )
@@ -1518,6 +1519,12 @@ def test_position_rule_policy_must_match_execution_behavior() -> None:
     timed_rules = PositionRulePolicy("rules-2", "time", (timed,), EvaluationMode.CLIENT)
     validate_rule_policy_against_execution_policy(execution_policy(), timed_rules)
 
+    scaled = PositionRuleDefinition("scale", PositionRuleType.SCALED_EXIT)
+    scaled_rules = PositionRulePolicy("rules-3", "scale", (scaled,), EvaluationMode.CLIENT)
+    validate_rule_policy_against_execution_policy(
+        execution_policy(allow_partial_fills=False), scaled_rules
+    )
+
     mismatched_execution = execution_policy()
     object.__setattr__(mismatched_execution, "lifecycle_version", cast("Any", "other"))
     with pytest.raises(ValueError, match="lifecycle versions"):
@@ -1534,6 +1541,14 @@ def test_position_rule_state_supports_negative_instrument_prices() -> None:
     )
 
     assert PositionRuleState.from_mapping(original.to_dict()) == original
+
+
+def test_position_rule_state_mapping_accepts_omitted_nullable_action_payload() -> None:
+    record = rule_state().to_dict()
+    record.pop("action_quantity")
+    record.pop("adjusted_stop_price")
+
+    assert PositionRuleState.from_mapping(record) == rule_state()
 
 
 def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
@@ -1638,6 +1653,15 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
             },
             ValueError,
             "triggered or complete",
+        ),
+        (
+            {
+                "activation": RuleActivation.TRIGGERED,
+                "action": PositionActionType.EXIT_FULL,
+                "exit_reason": ExitReason.STOP_LOSS,
+            },
+            ValueError,
+            "exit_full action requires a complete rule",
         ),
         (
             {
