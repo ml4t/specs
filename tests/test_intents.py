@@ -1371,7 +1371,11 @@ def test_position_rule_definition_mapping_rejects_malformed_scaled_targets(
         ),
         (
             lambda: position_rule("rule", PositionRuleType.STOP_LOSS, parameters=(("pct", 0),)),
-            "pct rule parameter must be positive",
+            r"pct rule parameter must be in \(0, 1\]",
+        ),
+        (
+            lambda: position_rule("rule", PositionRuleType.STOP_LOSS, parameters=(("pct", 5),)),
+            r"pct rule parameter must be in \(0, 1\]",
         ),
         (
             lambda: position_rule(
@@ -1804,6 +1808,17 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
             },
             ValueError,
             "exceed entry_quantity",
+        ),
+        (
+            {
+                "activation": RuleActivation.COMPLETE,
+                "remaining_exit_quantity": 0,
+                "action": PositionActionType.EXIT_PARTIAL,
+                "exit_reason": ExitReason.STOP_LOSS,
+                "action_quantity": 10,
+            },
+            ValueError,
+            "must use exit_full",
         ),
         (
             {"action": PositionActionType.ADJUST_STOP},

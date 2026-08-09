@@ -412,8 +412,12 @@ def test_lifecycle_mapping_rejects_incomplete_or_altered_supported_contract() ->
 
     contract_record = LIFECYCLE_V1.to_dict()
     contract_record["phases"][0]["callback"] = "renamed"
-    with pytest.raises(ValueError, match="does not match supported version '1'"):
+    with pytest.raises(ValueError, match="does not match registered version '1'"):
         LifecycleContract.from_mapping(contract_record)
+
+    altered = replace(LIFECYCLE_V1.phases[0], callback="renamed")
+    with pytest.raises(ValueError, match="does not match registered version '1'"):
+        LifecycleContract(LifecycleVersion.V1, (altered, *LIFECYCLE_V1.phases[1:]))
 
 
 @pytest.mark.parametrize(

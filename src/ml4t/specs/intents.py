@@ -598,10 +598,8 @@ class CanonicalChildOrderIntent:
             raise ValueError(
                 "next_phase resolving to the opening auction must use opening_auction eligibility"
             )
-        if (
-            eligibility is FillEligibility.NEXT_PHASE
-            and same_session
-            and not _later_market_fill_phases(self.eligibility_phase, self.lifecycle_version)
+        if eligibility is FillEligibility.NEXT_PHASE and not _later_market_fill_phases(
+            self.eligibility_phase, self.lifecycle_version
         ):
             raise ValueError(f"no later fill phase follows {self.eligibility_phase.value}")
 
@@ -963,7 +961,7 @@ _RULE_PARAMETER_NAMES: dict[PositionRuleType, frozenset[str]] = {
 
 @dataclass(frozen=True, slots=True)
 class PositionRuleDefinition:
-    """One versioned position rule or composition node."""
+    """One rule or composition node; pct parameters are fractional values in (0, 1]."""
 
     rule_id: str
     rule_type: PositionRuleType
@@ -1030,8 +1028,8 @@ class PositionRuleDefinition:
                 + (", ".join(sorted(expected_names)) if expected_names else "none")
             )
         parameter_values = dict(parameters)
-        if "pct" in parameter_values and parameter_values["pct"] <= 0:
-            raise ValueError("pct rule parameter must be positive")
+        if "pct" in parameter_values and not 0 < parameter_values["pct"] <= 1:
+            raise ValueError("pct rule parameter must be in (0, 1]")
         if self.rule_type is PositionRuleType.TIME_EXIT and (
             parameter_values["max_bars"] <= 0 or not parameter_values["max_bars"].is_integer()
         ):
@@ -1313,6 +1311,8 @@ class PositionRuleState:
                 raise ValueError(
                     "action_quantity and remaining_exit_quantity exceed entry_quantity"
                 )
+            if self.action_quantity == self.entry_quantity and self.remaining_exit_quantity == 0:
+                raise ValueError("terminal full-position action must use exit_full")
         elif self.action_quantity is not None:
             raise ValueError("action_quantity is only valid for exit_partial action")
         if self.action is PositionActionType.ADJUST_STOP:

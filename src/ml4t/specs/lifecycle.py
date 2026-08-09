@@ -509,6 +509,11 @@ class LifecycleContract:
                 "lifecycle phases must be complete, unique, and in contract order: "
                 + ", ".join(phase.value for phase in self._EXPECTED_PHASES)
             )
+        registered_phases = _REGISTERED_LIFECYCLE_PHASES[self.version]
+        if self.phases != registered_phases:
+            raise ValueError(
+                f"lifecycle contract does not match registered version {self.version.value!r}"
+            )
 
     def phase_spec(self, phase: LifecyclePhase) -> LifecyclePhaseSpec:
         """Return the specification for one phase."""
@@ -572,12 +577,7 @@ class LifecycleContract:
             )
             for raw in raw_phases
         )
-        contract = cls(version=version, phases=phases)
-        if contract != LIFECYCLE_V1:
-            raise ValueError(
-                f"lifecycle contract does not match supported version {version.value!r}"
-            )
-        return contract
+        return cls(version=version, phases=phases)
 
 
 def negotiate_lifecycle_version(
@@ -608,94 +608,100 @@ _INTRABAR = _OPEN + (InformationField.CURRENT_HIGH, InformationField.CURRENT_LOW
 _MARKET_EVENT = _OPEN + (InformationField.RUNNING_HIGH, InformationField.RUNNING_LOW)
 _COMPLETE = _INTRABAR + (InformationField.CURRENT_CLOSE,)
 
+_LIFECYCLE_V1_PHASES = (
+    LifecyclePhaseSpec(
+        LifecyclePhase.RUN_START,
+        "on_start",
+        (),
+        False,
+        CallbackCardinality.EXACTLY_ONCE,
+        CallbackExceptionSemantics.ABORT_BEFORE_SIDE_EFFECTS,
+        0,
+    ),
+    LifecyclePhaseSpec(
+        LifecyclePhase.CAUSAL_INITIALIZATION,
+        "on_prepare",
+        _PRIOR,
+        True,
+        CallbackCardinality.EXACTLY_ONCE,
+        CallbackExceptionSemantics.ABORT_BEFORE_SIDE_EFFECTS,
+        1,
+    ),
+    LifecyclePhaseSpec(
+        LifecyclePhase.PRE_OPEN,
+        "on_pre_open",
+        _PRIOR,
+        True,
+        CallbackCardinality.ONCE_PER_EVENT,
+        CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+        2,
+    ),
+    LifecyclePhaseSpec(
+        LifecyclePhase.OPENING_AUCTION,
+        "on_open",
+        _OPEN,
+        True,
+        CallbackCardinality.ONCE_PER_EVENT,
+        CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+        3,
+        (InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN),
+    ),
+    LifecyclePhaseSpec(
+        LifecyclePhase.FILL_RECONCILIATION,
+        "on_fill_reconciliation",
+        _OPEN + (InformationField.POST_FILL_STATE,),
+        False,
+        CallbackCardinality.ONCE_PER_EVENT,
+        CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+        4,
+    ),
+    LifecyclePhaseSpec(
+        LifecyclePhase.INTRABAR,
+        "on_intrabar",
+        _INTRABAR,
+        True,
+        CallbackCardinality.ONCE_PER_EVENT,
+        CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+        5,
+        (InformationField.CURRENT_HIGH, InformationField.CURRENT_LOW),
+    ),
+    LifecyclePhaseSpec(
+        LifecyclePhase.CLOSE,
+        "on_close",
+        _COMPLETE,
+        True,
+        CallbackCardinality.ONCE_PER_EVENT,
+        CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+        6,
+        (InformationField.CURRENT_CLOSE,),
+    ),
+    LifecyclePhaseSpec(
+        LifecyclePhase.MARKET_EVENT,
+        "on_data",
+        _MARKET_EVENT,
+        True,
+        CallbackCardinality.ONCE_PER_EVENT,
+        CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
+        5,
+    ),
+    LifecyclePhaseSpec(
+        LifecyclePhase.RUN_END,
+        "on_end",
+        _COMPLETE + (InformationField.POST_FILL_STATE,),
+        False,
+        CallbackCardinality.EXACTLY_ONCE,
+        CallbackExceptionSemantics.CLEANUP_AND_RERAISE,
+        7,
+    ),
+)
+
+_REGISTERED_LIFECYCLE_PHASES = {
+    LifecycleVersion.V1: _LIFECYCLE_V1_PHASES,
+}
+
 LIFECYCLE_V1 = LifecycleContract(
     version=LifecycleVersion.V1,
-    phases=(
-        LifecyclePhaseSpec(
-            LifecyclePhase.RUN_START,
-            "on_start",
-            (),
-            False,
-            CallbackCardinality.EXACTLY_ONCE,
-            CallbackExceptionSemantics.ABORT_BEFORE_SIDE_EFFECTS,
-            0,
-        ),
-        LifecyclePhaseSpec(
-            LifecyclePhase.CAUSAL_INITIALIZATION,
-            "on_prepare",
-            _PRIOR,
-            True,
-            CallbackCardinality.EXACTLY_ONCE,
-            CallbackExceptionSemantics.ABORT_BEFORE_SIDE_EFFECTS,
-            1,
-        ),
-        LifecyclePhaseSpec(
-            LifecyclePhase.PRE_OPEN,
-            "on_pre_open",
-            _PRIOR,
-            True,
-            CallbackCardinality.ONCE_PER_EVENT,
-            CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
-            2,
-        ),
-        LifecyclePhaseSpec(
-            LifecyclePhase.OPENING_AUCTION,
-            "on_open",
-            _OPEN,
-            True,
-            CallbackCardinality.ONCE_PER_EVENT,
-            CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
-            3,
-            (InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN),
-        ),
-        LifecyclePhaseSpec(
-            LifecyclePhase.FILL_RECONCILIATION,
-            "on_fill_reconciliation",
-            _OPEN + (InformationField.POST_FILL_STATE,),
-            False,
-            CallbackCardinality.ONCE_PER_EVENT,
-            CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
-            4,
-        ),
-        LifecyclePhaseSpec(
-            LifecyclePhase.INTRABAR,
-            "on_intrabar",
-            _INTRABAR,
-            True,
-            CallbackCardinality.ONCE_PER_EVENT,
-            CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
-            5,
-            (InformationField.CURRENT_HIGH, InformationField.CURRENT_LOW),
-        ),
-        LifecyclePhaseSpec(
-            LifecyclePhase.CLOSE,
-            "on_close",
-            _COMPLETE,
-            True,
-            CallbackCardinality.ONCE_PER_EVENT,
-            CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
-            6,
-            (InformationField.CURRENT_CLOSE,),
-        ),
-        LifecyclePhaseSpec(
-            LifecyclePhase.MARKET_EVENT,
-            "on_data",
-            _MARKET_EVENT,
-            True,
-            CallbackCardinality.ONCE_PER_EVENT,
-            CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
-            5,
-        ),
-        LifecyclePhaseSpec(
-            LifecyclePhase.RUN_END,
-            "on_end",
-            _COMPLETE + (InformationField.POST_FILL_STATE,),
-            False,
-            CallbackCardinality.EXACTLY_ONCE,
-            CallbackExceptionSemantics.CLEANUP_AND_RERAISE,
-            7,
-        ),
-    ),
+    phases=_LIFECYCLE_V1_PHASES,
 )
 
 
