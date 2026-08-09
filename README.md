@@ -116,6 +116,15 @@ trailing percentages remain positive. Favorable and adverse excursions are signe
 returns. Use `validate_child_against_policy()` before submission to reject child orders that need
 execution behavior disabled by the selected policy.
 
+For intraday strategies, `NEXT_PHASE` from `INTRABAR` or `MARKET_EVENT` means the next event in
+that same phase. Across sessions, `NEXT_PHASE` resolves to the later session's opening auction.
+
+Consumers migrating from `ml4t-specs` 0.1.0 must provide both `decision_session` and
+`effective_session` when constructing child intents. An order decided before the opening auction
+uses `eligibility_phase=PRE_OPEN` with `fill_eligibility=OPENING_AUCTION`; using
+`eligibility_phase=OPENING_AUCTION` means the decision already observed that session's open and is
+rejected for same-open execution.
+
 ## Read And Write Spec Payloads
 
 ```python

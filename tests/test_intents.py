@@ -755,6 +755,17 @@ def test_execution_policy_round_trip_and_records_all_assumptions() -> None:
             "requires opening_auction",
         ),
         ({"allow_partial_fills": cast("Any", 1)}, TypeError, "must be a bool"),
+        ({"supported_sessions": ()}, ValueError, "must not be empty"),
+        (
+            {"supported_sessions": (SessionPolicy.REGULAR, SessionPolicy.REGULAR)},
+            ValueError,
+            "unique",
+        ),
+        (
+            {"supported_sessions": cast("Any", "regular")},
+            TypeError,
+            "supported_sessions",
+        ),
         ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
     ],
 )
@@ -807,6 +818,18 @@ def test_child_must_be_supported_by_execution_policy() -> None:
             execution_policy(trailing=ExecutionBehavior.DISABLED),
             extra_capability_child,
         )
+    extended_child = child(session_policy=SessionPolicy.EXTENDED)
+    with pytest.raises(ValueError, match="session extended"):
+        validate_child_against_policy(execution_policy(), extended_child)
+    validate_child_against_policy(
+        execution_policy(supported_sessions=(SessionPolicy.REGULAR, SessionPolicy.EXTENDED)),
+        extended_child,
+    )
+    any_session_child = child(session_policy=SessionPolicy.ANY)
+    validate_child_against_policy(
+        execution_policy(supported_sessions=(SessionPolicy.REGULAR, SessionPolicy.EXTENDED)),
+        any_session_child,
+    )
 
 
 def test_market_child_fill_phase_must_match_execution_policy() -> None:
@@ -839,14 +862,24 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
     )
     with pytest.raises(ValueError, match="intrabar.*opening_auction"):
         validate_child_against_policy(execution_policy(), current_phase_child)
-    for eligibility_phase in (LifecyclePhase.MARKET_EVENT, LifecyclePhase.CLOSE):
-        with pytest.raises(ValueError, match="no later market fill phase"):
-            child(
-                eligibility_phase=eligibility_phase,
-                fill_eligibility=FillEligibility.NEXT_PHASE,
-                time_in_force=TimeInForce.DAY,
-                capabilities=(),
-            )
+    with pytest.raises(ValueError, match="no later market fill phase"):
+        child(
+            eligibility_phase=LifecyclePhase.CLOSE,
+            fill_eligibility=FillEligibility.NEXT_PHASE,
+            time_in_force=TimeInForce.DAY,
+            capabilities=(),
+        )
+
+    for eligibility_phase in (LifecyclePhase.INTRABAR, LifecyclePhase.MARKET_EVENT):
+        next_event_order = child(
+            eligibility_phase=eligibility_phase,
+            fill_eligibility=FillEligibility.NEXT_PHASE,
+            time_in_force=TimeInForce.DAY,
+            capabilities=(),
+        )
+        validate_child_against_policy(
+            execution_policy(market_fill_phase=eligibility_phase), next_event_order
+        )
 
     for eligibility_phase in (LifecyclePhase.INTRABAR, LifecyclePhase.CLOSE):
         next_session_order = child(

@@ -415,6 +415,8 @@ _MARKET_FILL_PHASES = frozenset(
 
 
 def _later_market_fill_phases(phase: LifecyclePhase) -> frozenset[LifecyclePhase]:
+    if phase in {LifecyclePhase.INTRABAR, LifecyclePhase.MARKET_EVENT}:
+        return frozenset({phase})
     current_rank = LIFECYCLE_V1.phase_spec(phase).causal_rank
     later_phases = {
         candidate
@@ -664,6 +666,7 @@ class ExecutionPolicy:
     liquidity_fraction: float
     allow_partial_fills: bool
     bar_path: BarPathPolicy
+    supported_sessions: tuple[SessionPolicy, ...] = (SessionPolicy.REGULAR,)
     lifecycle_version: LifecycleVersion = LifecycleVersion.V1
 
     def __post_init__(self) -> None:
@@ -679,6 +682,18 @@ class ExecutionPolicy:
         ):
             object.__setattr__(self, name, ExecutionBehavior(getattr(self, name)))
         object.__setattr__(self, "bar_path", BarPathPolicy(self.bar_path))
+        if isinstance(self.supported_sessions, str | bytes):
+            raise TypeError("supported_sessions must be an iterable of SessionPolicy values")
+        supported_sessions = tuple(SessionPolicy(value) for value in self.supported_sessions)
+        if not supported_sessions:
+            raise ValueError("supported_sessions must not be empty")
+        if len(supported_sessions) != len(set(supported_sessions)):
+            raise ValueError("supported_sessions must be unique")
+        object.__setattr__(
+            self,
+            "supported_sessions",
+            tuple(sorted(supported_sessions, key=lambda session: session.value)),
+        )
         if not isinstance(self.allow_partial_fills, bool):
             raise TypeError("allow_partial_fills must be a bool")
         object.__setattr__(
@@ -722,6 +737,7 @@ class ExecutionPolicy:
             "liquidity_fraction": self.liquidity_fraction,
             "allow_partial_fills": self.allow_partial_fills,
             "bar_path": self.bar_path.value,
+            "supported_sessions": [session.value for session in self.supported_sessions],
             "lifecycle_version": self.lifecycle_version.value,
         }
 
@@ -746,6 +762,9 @@ class ExecutionPolicy:
             liquidity_fraction=value["liquidity_fraction"],
             allow_partial_fills=value["allow_partial_fills"],
             bar_path=BarPathPolicy(value["bar_path"]),
+            supported_sessions=tuple(
+                SessionPolicy(session) for session in value["supported_sessions"]
+            ),
             lifecycle_version=value["lifecycle_version"],
         )
 
@@ -798,6 +817,16 @@ def validate_child_against_policy(
         raise ValueError(f"execution policy disables required behavior: {', '.join(disabled)}")
     if ExecutionCapability.PARTIAL_FILL in child.capabilities and not policy.allow_partial_fills:
         raise ValueError("execution policy disables partial fills")
+    supports_session = (
+        SessionPolicy.ANY in policy.supported_sessions
+        or child.session_policy in policy.supported_sessions
+        or (
+            child.session_policy is SessionPolicy.ANY
+            and {SessionPolicy.REGULAR, SessionPolicy.EXTENDED}.issubset(policy.supported_sessions)
+        )
+    )
+    if not supports_session:
+        raise ValueError(f"execution policy does not support session {child.session_policy.value}")
     if child.order_type is OrderType.MARKET and child.fill_eligibility in {
         FillEligibility.CURRENT_PHASE,
         FillEligibility.NEXT_PHASE,
