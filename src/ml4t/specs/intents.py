@@ -201,7 +201,7 @@ class AssetTarget:
     def __post_init__(self) -> None:
         object.__setattr__(self, "measure", TargetMeasure(self.measure))
         object.__setattr__(self, "asset", _non_empty(self.asset, "asset"))
-        _finite(self.value, "target value")
+        object.__setattr__(self, "value", _finite(self.value, "target value"))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible asset target."""
@@ -261,6 +261,8 @@ class CanonicalTargetIntent:
         targets = tuple(self.targets)
         if not targets:
             raise ValueError("targets must not be empty")
+        if any(not isinstance(target, AssetTarget) for target in targets):
+            raise TypeError("each target must be an AssetTarget")
         assets = tuple(target.asset for target in targets)
         if len(assets) != len(set(assets)):
             raise ValueError("targets must contain each asset once")
@@ -268,6 +270,7 @@ class CanonicalTargetIntent:
             raise ValueError("every target measure must match intent measure")
         object.__setattr__(self, "targets", tuple(sorted(targets, key=lambda item: item.asset)))
         cash_buffer = _finite(self.cash_buffer, "cash_buffer")
+        object.__setattr__(self, "cash_buffer", cash_buffer)
         if not 0 <= cash_buffer < 1:
             raise ValueError("cash_buffer must be in [0, 1)")
         if self.position_rule_policy_id is not None:
@@ -340,11 +343,14 @@ class OrderParameters:
         for name in ("limit_price", "stop_price"):
             value = getattr(self, name)
             if value is not None:
-                _finite(value, name)
+                object.__setattr__(self, name, _finite(value, name))
         for name in ("trail_amount", "trail_percent"):
             value = getattr(self, name)
-            if value is not None and _finite(value, name) <= 0:
-                raise ValueError(f"{name} must be positive")
+            if value is not None:
+                normalized = _finite(value, name)
+                object.__setattr__(self, name, normalized)
+                if normalized <= 0:
+                    raise ValueError(f"{name} must be positive")
         if self.trail_percent is not None and self.trail_percent > 1:
             raise ValueError("trail_percent must be at most 1")
 
@@ -399,6 +405,31 @@ _ALLOWED_PARAMETERS: dict[OrderType, frozenset[str]] = {
     OrderType.MOC: frozenset(),
 }
 
+_MARKET_FILL_PHASES = frozenset(
+    {
+        LifecyclePhase.OPENING_AUCTION,
+        LifecyclePhase.INTRABAR,
+        LifecyclePhase.MARKET_EVENT,
+    }
+)
+
+
+def _later_market_fill_phases(phase: LifecyclePhase) -> frozenset[LifecyclePhase]:
+    current_rank = LIFECYCLE_V1.phase_spec(phase).causal_rank
+    later_phases = {
+        candidate
+        for candidate in _MARKET_FILL_PHASES
+        if LIFECYCLE_V1.phase_spec(candidate).causal_rank > current_rank
+    }
+    if not later_phases:
+        return frozenset()
+    next_rank = min(LIFECYCLE_V1.phase_spec(candidate).causal_rank for candidate in later_phases)
+    return frozenset(
+        candidate
+        for candidate in later_phases
+        if LIFECYCLE_V1.phase_spec(candidate).causal_rank == next_rank
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class CanonicalChildOrderIntent:
@@ -438,7 +469,9 @@ class CanonicalChildOrderIntent:
             (self.asset, "asset"),
         ):
             object.__setattr__(self, name, _non_empty(value, name))
-        if _finite(self.quantity, "quantity") <= 0:
+        quantity = _finite(self.quantity, "quantity")
+        object.__setattr__(self, "quantity", quantity)
+        if quantity <= 0:
             raise ValueError("quantity must be positive and unsigned")
         if not isinstance(self.effective_session, date) or isinstance(
             self.effective_session, datetime
@@ -502,6 +535,18 @@ class CanonicalChildOrderIntent:
             raise ValueError(
                 f"fill eligibility would consume already visible information: {fields}"
             )
+        if self.order_type is OrderType.MARKET:
+            if (
+                eligibility is FillEligibility.CURRENT_PHASE
+                and self.eligibility_phase not in _MARKET_FILL_PHASES
+            ):
+                raise ValueError("current-phase market order requires a market-fill phase")
+            if eligibility is FillEligibility.NEXT_PHASE and not _later_market_fill_phases(
+                self.eligibility_phase
+            ):
+                raise ValueError(
+                    f"no later market fill phase follows {self.eligibility_phase.value}"
+                )
 
     def _validate_parameters(self) -> None:
         parameters = self.parameters
@@ -585,15 +630,6 @@ class CanonicalChildOrderIntent:
         )
 
 
-_MARKET_FILL_PHASES = frozenset(
-    {
-        LifecyclePhase.OPENING_AUCTION,
-        LifecyclePhase.INTRABAR,
-        LifecyclePhase.MARKET_EVENT,
-    }
-)
-
-
 @dataclass(frozen=True, slots=True)
 class ExecutionPolicy:
     """Recorded execution assumptions used by an engine or venue."""
@@ -615,6 +651,7 @@ class ExecutionPolicy:
     liquidity_fraction: float
     allow_partial_fills: bool
     bar_path: BarPathPolicy
+    lifecycle_version: LifecycleVersion = LifecycleVersion.V1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "market_fill_phase", LifecyclePhase(self.market_fill_phase))
@@ -629,13 +666,19 @@ class ExecutionPolicy:
         ):
             object.__setattr__(self, name, ExecutionBehavior(getattr(self, name)))
         object.__setattr__(self, "bar_path", BarPathPolicy(self.bar_path))
+        object.__setattr__(
+            self, "lifecycle_version", negotiate_lifecycle_version(self.lifecycle_version)
+        )
         object.__setattr__(self, "policy_id", _non_empty(self.policy_id, "policy_id"))
         if self.market_fill_phase not in _MARKET_FILL_PHASES:
             raise ValueError(f"phase {self.market_fill_phase.value!r} does not allow market fills")
         for name in ("fee_bps", "slippage_bps", "spread_bps", "impact_bps", "latency_ms"):
-            if _finite(getattr(self, name), name) < 0:
+            value = _finite(getattr(self, name), name)
+            object.__setattr__(self, name, value)
+            if value < 0:
                 raise ValueError(f"{name} must be non-negative")
         liquidity = _finite(self.liquidity_fraction, "liquidity_fraction")
+        object.__setattr__(self, "liquidity_fraction", liquidity)
         if not 0 < liquidity <= 1:
             raise ValueError("liquidity_fraction must be in (0, 1]")
 
@@ -659,6 +702,7 @@ class ExecutionPolicy:
             "liquidity_fraction": self.liquidity_fraction,
             "allow_partial_fills": self.allow_partial_fills,
             "bar_path": self.bar_path.value,
+            "lifecycle_version": self.lifecycle_version.value,
         }
 
     @classmethod
@@ -682,6 +726,7 @@ class ExecutionPolicy:
             liquidity_fraction=value["liquidity_fraction"],
             allow_partial_fills=bool(value["allow_partial_fills"]),
             bar_path=BarPathPolicy(value["bar_path"]),
+            lifecycle_version=value["lifecycle_version"],
         )
 
 
@@ -732,22 +777,7 @@ def validate_child_against_policy(
     }:
         fill_phase = child.eligibility_phase
         if child.fill_eligibility is FillEligibility.NEXT_PHASE:
-            current_rank = LIFECYCLE_V1.phase_spec(fill_phase).causal_rank
-            later_phases = {
-                phase
-                for phase in _MARKET_FILL_PHASES
-                if LIFECYCLE_V1.phase_spec(phase).causal_rank > current_rank
-            }
-            if not later_phases:
-                raise ValueError(
-                    f"no later market fill phase follows {child.eligibility_phase.value}"
-                )
-            next_rank = min(LIFECYCLE_V1.phase_spec(phase).causal_rank for phase in later_phases)
-            valid_fill_phases = {
-                phase
-                for phase in later_phases
-                if LIFECYCLE_V1.phase_spec(phase).causal_rank == next_rank
-            }
+            valid_fill_phases = _later_market_fill_phases(fill_phase)
         else:
             valid_fill_phases = {fill_phase}
         if policy.market_fill_phase not in valid_fill_phases:
@@ -770,7 +800,8 @@ class PositionRuleDefinition:
     def __post_init__(self) -> None:
         object.__setattr__(self, "rule_type", PositionRuleType(self.rule_type))
         parameters = tuple(
-            (_non_empty(name, "rule parameter name"), value) for name, value in self.parameters
+            (_non_empty(name, "rule parameter name"), _finite(value, f"rule parameter {name}"))
+            for name, value in self.parameters
         )
         children = tuple(_non_empty(child, "rule child") for child in self.children)
         object.__setattr__(self, "parameters", parameters)
@@ -781,8 +812,6 @@ class PositionRuleDefinition:
         names = tuple(name for name, _ in parameters)
         if len(names) != len(set(names)):
             raise ValueError("rule parameter names must be unique")
-        for name, value in self.parameters:
-            _finite(value, f"rule parameter {name}")
         is_composite = self.rule_type is PositionRuleType.COMPOSITE
         if is_composite and (not self.children or self.composition is None):
             raise ValueError("composite rules require children and composition")
@@ -853,21 +882,23 @@ class PositionRulePolicy:
         if unknown_children:
             raise ValueError(f"unknown position rule children: {sorted(unknown_children)}")
         rules_by_id = {rule.rule_id: rule for rule in self.rules}
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def visit(rule_id: str) -> None:
-            if rule_id in visiting:
-                raise ValueError(f"position rule graph contains a cycle at {rule_id!r}")
-            if rule_id in visited:
-                return
-            visiting.add(rule_id)
-            for child in rules_by_id[rule_id].children:
-                visit(child)
-            visiting.remove(rule_id)
-            visited.add(rule_id)
-
-        visit(self.root_rule_id)
+        states: dict[str, int] = {}
+        stack = [(self.root_rule_id, False)]
+        while stack:
+            rule_id, expanded = stack.pop()
+            if expanded:
+                states[rule_id] = 2
+                continue
+            if states.get(rule_id) == 2:
+                continue
+            states[rule_id] = 1
+            stack.append((rule_id, True))
+            for child in reversed(rules_by_id[rule_id].children):
+                if states.get(child) == 1:
+                    raise ValueError(f"position rule graph contains a cycle at {child!r}")
+                if states.get(child) != 2:
+                    stack.append((child, False))
+        visited = {rule_id for rule_id, state in states.items() if state == 2}
         unreachable = set(rule_ids) - visited
         if unreachable:
             raise ValueError(f"unreachable position rules: {sorted(unreachable)}")
@@ -916,12 +947,16 @@ class PositionRuleState:
     action: PositionActionType
     exit_reason: ExitReason
     evaluation_mode: EvaluationMode
+    lifecycle_version: LifecycleVersion = LifecycleVersion.V1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "activation", RuleActivation(self.activation))
         object.__setattr__(self, "action", PositionActionType(self.action))
         object.__setattr__(self, "exit_reason", ExitReason(self.exit_reason))
         object.__setattr__(self, "evaluation_mode", EvaluationMode(self.evaluation_mode))
+        object.__setattr__(
+            self, "lifecycle_version", negotiate_lifecycle_version(self.lifecycle_version)
+        )
         for value, name in (
             (self.policy_id, "policy_id"),
             (self.asset, "asset"),
@@ -938,7 +973,7 @@ class PositionRuleState:
             "max_adverse_excursion",
             "remaining_exit_quantity",
         ):
-            _finite(getattr(self, name), name)
+            object.__setattr__(self, name, _finite(getattr(self, name), name))
         if self.entry_quantity <= 0:
             raise ValueError("entry_quantity must be positive")
         if not 0 <= self.remaining_exit_quantity <= self.entry_quantity:
@@ -973,6 +1008,7 @@ class PositionRuleState:
             "action": self.action.value,
             "exit_reason": self.exit_reason.value,
             "evaluation_mode": self.evaluation_mode.value,
+            "lifecycle_version": self.lifecycle_version.value,
         }
 
     @classmethod
@@ -994,6 +1030,7 @@ class PositionRuleState:
             action=PositionActionType(value["action"]),
             exit_reason=ExitReason(value["exit_reason"]),
             evaluation_mode=EvaluationMode(value["evaluation_mode"]),
+            lifecycle_version=value["lifecycle_version"],
         )
 
 

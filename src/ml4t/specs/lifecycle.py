@@ -193,6 +193,8 @@ class BarPayload:
             name: _finite(getattr(self, name), name)
             for name in ("open", "high", "low", "close", "volume")
         }
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
         if values["volume"] < 0:
             raise ValueError("volume must be non-negative")
         if values["high"] < max(values["open"], values["low"], values["close"]):
@@ -209,8 +211,10 @@ class TradePayload:
     size: float
 
     def __post_init__(self) -> None:
-        _finite(self.price, "price")
-        if _finite(self.size, "size") < 0:
+        object.__setattr__(self, "price", _finite(self.price, "price"))
+        size = _finite(self.size, "size")
+        object.__setattr__(self, "size", size)
+        if size < 0:
             raise ValueError("size must be non-negative")
 
 
@@ -226,9 +230,15 @@ class QuotePayload:
     def __post_init__(self) -> None:
         bid = _finite(self.bid, "bid")
         ask = _finite(self.ask, "ask")
+        bid_size = _finite(self.bid_size, "bid_size")
+        ask_size = _finite(self.ask_size, "ask_size")
+        object.__setattr__(self, "bid", bid)
+        object.__setattr__(self, "ask", ask)
+        object.__setattr__(self, "bid_size", bid_size)
+        object.__setattr__(self, "ask_size", ask_size)
         if ask < bid:
             raise ValueError("ask must be at least bid")
-        if _finite(self.bid_size, "bid_size") < 0 or _finite(self.ask_size, "ask_size") < 0:
+        if bid_size < 0 or ask_size < 0:
             raise ValueError("quote sizes must be non-negative")
 
 
@@ -239,7 +249,7 @@ class FundingPayload:
     rate: float
 
     def __post_init__(self) -> None:
-        _finite(self.rate, "rate")
+        object.__setattr__(self, "rate", _finite(self.rate, "rate"))
 
 
 MarketEventPayload = BarPayload | TradePayload | QuotePayload | FundingPayload

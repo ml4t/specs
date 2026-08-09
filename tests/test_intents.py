@@ -231,6 +231,7 @@ def test_target_materializes_single_pass_iterables_before_validation() -> None:
         ),
         ({"effective_phase": cast("Any", "run_start")}, ValueError, "does not allow"),
         ({"targets": ()}, ValueError, "must not be empty"),
+        ({"targets": cast("Any", ({"asset": "SPY"},))}, TypeError, "AssetTarget"),
         (
             {
                 "targets": (
@@ -465,6 +466,16 @@ def test_child_capability_order_is_canonical() -> None:
         ),
         (
             {
+                "eligibility_phase": LifecyclePhase.PRE_OPEN,
+                "fill_eligibility": FillEligibility.CURRENT_PHASE,
+                "time_in_force": TimeInForce.IOC,
+                "capabilities": (),
+            },
+            ValueError,
+            "market-fill phase",
+        ),
+        (
+            {
                 "eligibility_phase": LifecyclePhase.OPENING_AUCTION,
                 "fill_eligibility": FillEligibility.CURRENT_PHASE,
                 "time_in_force": TimeInForce.IOC,
@@ -671,6 +682,14 @@ def test_order_parameters_support_nonpositive_instrument_prices() -> None:
     assert parameters.stop_price == 0
 
 
+def test_contract_numerics_are_canonical_floats() -> None:
+    assert isinstance(AssetTarget("SPY", TargetMeasure.QUANTITY, 1).value, float)
+    assert isinstance(target(cash_buffer=0).cash_buffer, float)
+    assert isinstance(child(quantity=10).quantity, float)
+    assert isinstance(execution_policy(fee_bps=1).fee_bps, float)
+    assert isinstance(rule_state(entry_price=100).entry_price, float)
+
+
 def test_partial_fill_remainder_is_validated() -> None:
     order = child(quantity=10)
     assert order.remaining_after_fill(4) == 6
@@ -709,6 +728,7 @@ def test_execution_policy_round_trip_and_records_all_assumptions() -> None:
         ({"market_fill_phase": LifecyclePhase.RUN_END}, ValueError, "market fills"),
         ({"market_fill_phase": LifecyclePhase.CAUSAL_INITIALIZATION}, ValueError, "market fills"),
         ({"market_fill_phase": cast("Any", "close")}, ValueError, "market fills"),
+        ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
     ],
 )
 def test_execution_policy_validation(
@@ -786,16 +806,12 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
     with pytest.raises(ValueError, match="intrabar.*opening_auction"):
         validate_child_against_policy(execution_policy(), current_phase_child)
     for eligibility_phase in (LifecyclePhase.MARKET_EVENT, LifecyclePhase.CLOSE):
-        no_successor = child(
-            eligibility_phase=eligibility_phase,
-            fill_eligibility=FillEligibility.NEXT_PHASE,
-            time_in_force=TimeInForce.DAY,
-            capabilities=(),
-        )
         with pytest.raises(ValueError, match="no later market fill phase"):
-            validate_child_against_policy(
-                execution_policy(market_fill_phase=LifecyclePhase.MARKET_EVENT),
-                no_successor,
+            child(
+                eligibility_phase=eligibility_phase,
+                fill_eligibility=FillEligibility.NEXT_PHASE,
+                time_in_force=TimeInForce.DAY,
+                capabilities=(),
             )
 
 
@@ -1028,6 +1044,46 @@ def test_position_rule_policy_accepts_shared_acyclic_children() -> None:
 
     assert policy.root_rule_id == "root"
 
+    dependency = PositionRuleDefinition(
+        "dependency",
+        PositionRuleType.COMPOSITE,
+        children=("leaf",),
+        composition=RuleComposition.ALL,
+    )
+    duplicate_path_root = PositionRuleDefinition(
+        "duplicate-path-root",
+        PositionRuleType.COMPOSITE,
+        children=("dependency", "leaf"),
+        composition=RuleComposition.ALL,
+    )
+    duplicate_path_policy = PositionRulePolicy(
+        "rules-2",
+        "duplicate-path-root",
+        (duplicate_path_root, dependency, leaf),
+        EvaluationMode.CLIENT,
+    )
+    assert duplicate_path_policy.root_rule_id == "duplicate-path-root"
+
+
+def test_position_rule_policy_accepts_deep_acyclic_graph() -> None:
+    rules = [PositionRuleDefinition("leaf", PositionRuleType.STOP_LOSS)]
+    child_id = "leaf"
+    for index in range(1_200):
+        rule_id = f"node-{index}"
+        rules.append(
+            PositionRuleDefinition(
+                rule_id,
+                PositionRuleType.COMPOSITE,
+                children=(child_id,),
+                composition=RuleComposition.ALL,
+            )
+        )
+        child_id = rule_id
+
+    policy = PositionRulePolicy("rules-1", child_id, tuple(reversed(rules)), EvaluationMode.CLIENT)
+
+    assert len(policy.rules) == 1_201
+
 
 def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
     hold = rule_state()
@@ -1064,6 +1120,7 @@ def test_position_rule_state_supports_negative_instrument_prices() -> None:
         ({"low_water_mark": 111}, ValueError, "must not exceed"),
         ({"max_favorable_excursion": -0.01}, ValueError, "non-negative fractional"),
         ({"max_adverse_excursion": 0.01}, ValueError, "non-positive fractional"),
+        ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
         ({"exit_reason": ExitReason.SIGNAL}, ValueError, "hold and adjust_stop"),
         (
             {"action": PositionActionType.ADJUST_STOP, "exit_reason": ExitReason.STOP_LOSS},
@@ -1194,19 +1251,23 @@ def test_child_lineage_validation() -> None:
 
     market_event_target = target(effective_phase=LifecyclePhase.MARKET_EVENT)
     close_child = child(
+        order_type=OrderType.LIMIT,
+        parameters=OrderParameters(limit_price=100),
         eligibility_phase=LifecyclePhase.CLOSE,
         fill_eligibility=FillEligibility.NEXT_PHASE,
         time_in_force=TimeInForce.DAY,
-        capabilities=(),
+        capabilities=(ExecutionCapability.LIMIT,),
     )
     validate_child_lineage(market_event_target, close_child)
 
     close_target = target(effective_phase=LifecyclePhase.CLOSE)
     market_event_child = child(
+        order_type=OrderType.LIMIT,
+        parameters=OrderParameters(limit_price=100),
         eligibility_phase=LifecyclePhase.MARKET_EVENT,
         fill_eligibility=FillEligibility.NEXT_PHASE,
         time_in_force=TimeInForce.DAY,
-        capabilities=(),
+        capabilities=(ExecutionCapability.LIMIT,),
     )
     with pytest.raises(ValueError, match="precedes"):
         validate_child_lineage(close_target, market_event_child)
