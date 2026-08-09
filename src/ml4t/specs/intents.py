@@ -364,15 +364,7 @@ _FILL_ELIGIBILITY_CAPABILITY: dict[FillEligibility, ExecutionCapability | None] 
 }
 
 _FILL_INFORMATION_FIELDS: dict[FillEligibility, frozenset[InformationField]] = {
-    FillEligibility.CURRENT_PHASE: frozenset(
-        {
-            InformationField.OFFICIAL_OPEN,
-            InformationField.CURRENT_OPEN,
-            InformationField.CURRENT_HIGH,
-            InformationField.CURRENT_LOW,
-            InformationField.CURRENT_CLOSE,
-        }
-    ),
+    FillEligibility.CURRENT_PHASE: frozenset({InformationField.CURRENT_CLOSE}),
     FillEligibility.NEXT_PHASE: frozenset(),
     FillEligibility.OPENING_AUCTION: frozenset(
         {InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN}
@@ -402,6 +394,7 @@ class CanonicalChildOrderIntent:
     quantity: float
     order_type: OrderType
     parameters: OrderParameters
+    effective_session: date
     eligibility_phase: LifecyclePhase
     fill_eligibility: FillEligibility
     time_in_force: TimeInForce
@@ -429,6 +422,10 @@ class CanonicalChildOrderIntent:
             _non_empty(value, name)
         if _finite(self.quantity, "quantity") <= 0:
             raise ValueError("quantity must be positive and unsigned")
+        if not isinstance(self.effective_session, date) or isinstance(
+            self.effective_session, datetime
+        ):
+            raise TypeError("effective_session must be a date")
         _intent_phase(self.eligibility_phase)
         if len(self.capabilities) != len(set(self.capabilities)):
             raise ValueError("capabilities must be unique")
@@ -525,6 +522,7 @@ class CanonicalChildOrderIntent:
             "quantity": self.quantity,
             "order_type": self.order_type.value,
             "parameters": asdict(self.parameters),
+            "effective_session": self.effective_session.isoformat(),
             "eligibility_phase": self.eligibility_phase.value,
             "fill_eligibility": self.fill_eligibility.value,
             "time_in_force": self.time_in_force.value,
@@ -549,6 +547,7 @@ class CanonicalChildOrderIntent:
             quantity=value["quantity"],
             order_type=OrderType(value["order_type"]),
             parameters=OrderParameters(**parameters),
+            effective_session=date.fromisoformat(value["effective_session"]),
             eligibility_phase=LifecyclePhase(value["eligibility_phase"]),
             fill_eligibility=FillEligibility(value["fill_eligibility"]),
             time_in_force=TimeInForce(value["time_in_force"]),
@@ -692,6 +691,11 @@ def validate_child_against_policy(
         raise ValueError(f"execution policy disables required behavior: {', '.join(disabled)}")
     if ExecutionCapability.PARTIAL_FILL in child.capabilities and not policy.allow_partial_fills:
         raise ValueError("execution policy disables partial fills")
+    if (
+        ExecutionCapability.CONTINGENT in child.capabilities
+        and policy.contingent is ExecutionBehavior.DISABLED
+    ):
+        raise ValueError("execution policy disables contingent orders")
 
 
 @dataclass(frozen=True, slots=True)
@@ -718,8 +722,11 @@ class PositionRuleDefinition:
             raise ValueError("rule parameter names must be non-empty and unique")
         for name, value in self.parameters:
             _finite(value, f"rule parameter {name}")
-        if bool(self.children) != (self.composition is not None):
-            raise ValueError("composition and children must be provided together")
+        is_composite = self.rule_type is PositionRuleType.COMPOSITE
+        if is_composite and (not self.children or self.composition is None):
+            raise ValueError("composite rules require children and composition")
+        if not is_composite and (self.children or self.composition is not None):
+            raise ValueError("leaf rules forbid children and composition")
         if self.children and len(self.children) != len(set(self.children)):
             raise ValueError("rule children must be unique")
 
@@ -966,6 +973,10 @@ def validate_child_lineage(target: CanonicalTargetIntent, child: CanonicalChildO
         raise ValueError("child lifecycle version does not match target")
     if child.asset not in {item.asset for item in target.targets}:
         raise ValueError("child asset is absent from target")
+    if child.effective_session < target.effective_session:
+        raise ValueError("child effective session precedes target effective session")
+    if child.effective_session > target.effective_session:
+        return
     target_rank = LIFECYCLE_V1.phase_spec(target.effective_phase).causal_rank
     child_rank = LIFECYCLE_V1.phase_spec(child.eligibility_phase).causal_rank
     if child_rank < target_rank:
@@ -997,6 +1008,7 @@ def canonical_intent_fixture() -> dict[str, Any]:
         quantity=10,
         order_type=OrderType.MARKET,
         parameters=OrderParameters(),
+        effective_session=date(2026, 8, 10),
         eligibility_phase=LifecyclePhase.PRE_OPEN,
         fill_eligibility=FillEligibility.OPENING_AUCTION,
         time_in_force=TimeInForce.OPG,

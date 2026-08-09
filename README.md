@@ -100,9 +100,11 @@ validated payloads, provider sequence or gap evidence, and immutable JSON metada
 
 `CanonicalTargetIntent` records a strategy decision before order construction.
 `CanonicalChildOrderIntent` records the resulting unsigned order, its target lineage, fill
-eligibility, time in force, and required execution capabilities. `ExecutionPolicy` records the
-assumptions under which an engine or venue executes those orders. `PositionRulePolicy` and
-`PositionRuleState` make client-side and broker-native exit behavior portable and resumable.
+session, eligibility phase, time in force, and required execution capabilities. The explicit
+session permits a close decision to schedule a child for a later session's opening auction.
+`ExecutionPolicy` records the assumptions under which an engine or venue executes those orders.
+`PositionRulePolicy` and `PositionRuleState` make client-side and broker-native exit behavior
+portable and resumable.
 
 These contracts serialize to JSON-compatible mappings. Their comparison helpers report exact
 field-level differences, including generated identities and timestamps. Callers comparing two

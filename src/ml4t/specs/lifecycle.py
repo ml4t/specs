@@ -283,12 +283,16 @@ class MarketEvent:
         object.__setattr__(self, "completion", completion)
         object.__setattr__(self, "event_time", _utc(self.event_time, "event_time"))
         object.__setattr__(self, "receipt_time", _utc(self.receipt_time, "receipt_time"))
+        if self.receipt_time < self.event_time:
+            raise ValueError("receipt_time must not precede event_time")
         _non_empty(self.source, "source")
         _non_empty(self.asset, "asset")
         if not isinstance(self.payload, _PAYLOAD_TYPES[kind]):
             raise TypeError(f"{kind.value} event requires {_PAYLOAD_TYPES[kind].__name__}")
         if self.provider_sequence is None and self.gap is None:
             raise ValueError("provider_sequence or gap evidence is required")
+        if self.gap is not None and not isinstance(self.gap, GapEvidence):
+            raise TypeError("gap must be GapEvidence or None")
         _provider_sequence(self.provider_sequence, "provider_sequence")
         metadata = _json_metadata(self.metadata)
         if not isinstance(metadata, dict):

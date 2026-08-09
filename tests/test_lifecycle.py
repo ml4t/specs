@@ -292,6 +292,11 @@ def test_market_event_normalizes_string_enums() -> None:
             ValueError,
             "receipt_time",
         ),
+        (
+            {"receipt_time": EVENT_TIME - timedelta(microseconds=1)},
+            ValueError,
+            "must not precede",
+        ),
         ({"event_time": cast("Any", "now")}, ValueError, "event_time"),
         ({"source": ""}, ValueError, "source"),
         ({"asset": "  "}, ValueError, "asset"),
@@ -301,6 +306,11 @@ def test_market_event_normalizes_string_enums() -> None:
         ({"provider_sequence": 1.5}, TypeError, "provider_sequence"),
         ({"provider_sequence": ""}, ValueError, "must not be empty"),
         ({"provider_sequence": -1}, ValueError, "non-negative"),
+        (
+            {"gap": cast("Any", {"detected": False, "reason": "not validated"})},
+            TypeError,
+            "GapEvidence",
+        ),
     ],
 )
 def test_market_event_rejects_invalid_identity(

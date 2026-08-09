@@ -5,6 +5,7 @@
       "opening_auction"
     ],
     "child_intent_id": "child-1",
+    "effective_session": "2026-08-10",
     "eligibility_phase": "pre_open",
     "fill_eligibility": "opening_auction",
     "idempotency_key": "child-2026-08-10-SPY",

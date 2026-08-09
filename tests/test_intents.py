@@ -81,6 +81,7 @@ def child(**overrides: Any) -> CanonicalChildOrderIntent:
         "quantity": 10.0,
         "order_type": OrderType.MARKET,
         "parameters": OrderParameters(),
+        "effective_session": date(2026, 8, 10),
         "eligibility_phase": LifecyclePhase.PRE_OPEN,
         "fill_eligibility": FillEligibility.OPENING_AUCTION,
         "time_in_force": TimeInForce.OPG,
@@ -398,6 +399,8 @@ def test_child_capability_order_is_canonical() -> None:
         ({"quantity": 0}, ValueError, "positive and unsigned"),
         ({"quantity": -1}, ValueError, "positive and unsigned"),
         ({"quantity": cast("Any", True)}, TypeError, "number"),
+        ({"effective_session": DECISION_TIME}, TypeError, "effective_session"),
+        ({"effective_session": cast("Any", "2026-08-10")}, TypeError, "effective_session"),
         ({"eligibility_phase": LifecyclePhase.RUN_END}, ValueError, "does not allow"),
         (
             {"order_type": OrderType.LIMIT, "parameters": OrderParameters(), "capabilities": ()},
@@ -441,16 +444,6 @@ def test_child_capability_order_is_canonical() -> None:
                 "fill_eligibility": FillEligibility.OPENING_AUCTION,
                 "time_in_force": TimeInForce.OPG,
                 "capabilities": (ExecutionCapability.OPENING_AUCTION,),
-            },
-            ValueError,
-            "current_open",
-        ),
-        (
-            {
-                "eligibility_phase": LifecyclePhase.OPENING_AUCTION,
-                "fill_eligibility": FillEligibility.CURRENT_PHASE,
-                "time_in_force": TimeInForce.DAY,
-                "capabilities": (),
             },
             ValueError,
             "current_open",
@@ -586,6 +579,20 @@ def test_child_rejects_contradictory_execution_fields(
         child(**overrides)
 
 
+@pytest.mark.parametrize("time_in_force", [TimeInForce.IOC, TimeInForce.FOK])
+def test_evolving_market_events_support_immediate_time_in_force(
+    time_in_force: TimeInForce,
+) -> None:
+    order = child(
+        eligibility_phase=LifecyclePhase.MARKET_EVENT,
+        fill_eligibility=FillEligibility.CURRENT_PHASE,
+        time_in_force=time_in_force,
+        capabilities=(),
+    )
+
+    assert order.time_in_force is time_in_force
+
+
 @pytest.mark.parametrize(
     ("order_type", "parameters", "capabilities", "irrelevant"),
     [
@@ -714,6 +721,13 @@ def test_child_must_be_supported_by_execution_policy() -> None:
         )
     with pytest.raises(ValueError, match="partial fills"):
         validate_child_against_policy(execution_policy(allow_partial_fills=False), partial_child)
+    contingent_child = child(
+        fill_eligibility=FillEligibility.NEXT_PHASE,
+        time_in_force=TimeInForce.DAY,
+        capabilities=(ExecutionCapability.CONTINGENT,),
+    )
+    with pytest.raises(ValueError, match="contingent"):
+        validate_child_against_policy(execution_policy(), contingent_child)
 
 
 def test_position_rule_definition_and_policy_round_trip() -> None:
@@ -807,13 +821,22 @@ def test_position_rule_definition_mapping_rejects_malformed_collections(
         ),
         (
             lambda: PositionRuleDefinition("rule", PositionRuleType.COMPOSITE, children=("a",)),
-            "together",
+            "composite rules require",
         ),
         (
             lambda: PositionRuleDefinition(
                 "rule", PositionRuleType.COMPOSITE, composition=RuleComposition.ALL
             ),
-            "together",
+            "composite rules require",
+        ),
+        (
+            lambda: PositionRuleDefinition(
+                "rule",
+                PositionRuleType.STOP_LOSS,
+                children=("a",),
+                composition=RuleComposition.ALL,
+            ),
+            "leaf rules forbid",
         ),
         (
             lambda: PositionRuleDefinition(
@@ -1049,6 +1072,13 @@ def test_child_lineage_validation() -> None:
     later_target = target(effective_phase=LifecyclePhase.CLOSE)
     with pytest.raises(ValueError, match="precedes"):
         validate_child_lineage(later_target, valid)
+
+    prior_session_child = replace(valid, effective_session=date(2026, 8, 9))
+    with pytest.raises(ValueError, match="effective session"):
+        validate_child_lineage(parent, prior_session_child)
+
+    next_session_child = replace(valid, effective_session=date(2026, 8, 11))
+    validate_child_lineage(later_target, next_session_child)
 
     market_event_target = target(effective_phase=LifecyclePhase.MARKET_EVENT)
     close_child = child(
