@@ -401,17 +401,6 @@ _FILL_INFORMATION_FIELDS: dict[FillEligibility, frozenset[InformationField]] = {
     FillEligibility.CLOSE_AUCTION: frozenset({InformationField.CURRENT_CLOSE}),
 }
 
-_CURRENT_PHASE_INFORMATION_FIELDS: dict[LifecyclePhase, frozenset[InformationField]] = {
-    LifecyclePhase.OPENING_AUCTION: frozenset(
-        {InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN}
-    ),
-    LifecyclePhase.INTRABAR: frozenset(
-        {InformationField.CURRENT_HIGH, InformationField.CURRENT_LOW}
-    ),
-    # Market-event callbacks observe evolving ticks, not completed-bar extremes.
-    LifecyclePhase.MARKET_EVENT: frozenset(),
-}
-
 _ALLOWED_PARAMETERS: dict[OrderType, frozenset[str]] = {
     OrderType.MARKET: frozenset(),
     OrderType.LIMIT: frozenset({"limit_price"}),
@@ -574,7 +563,11 @@ class CanonicalChildOrderIntent:
             )
             information_fields = _FILL_INFORMATION_FIELDS[eligibility]
             if eligibility is FillEligibility.CURRENT_PHASE:
-                information_fields = _CURRENT_PHASE_INFORMATION_FIELDS[self.eligibility_phase]
+                information_fields = frozenset(
+                    _lifecycle_contract(self.lifecycle_version)
+                    .phase_spec(self.eligibility_phase)
+                    .current_phase_fill_fields
+                )
             consumed = visible & information_fields
             if consumed:
                 fields = ", ".join(sorted(field.value for field in consumed))

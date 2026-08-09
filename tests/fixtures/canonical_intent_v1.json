@@ -18,7 +18,7 @@
       "trail_amount": null,
       "trail_percent": null
     },
-    "quantity": 10,
+    "quantity": 10.0,
     "reason": "rebalance",
     "session_policy": "regular",
     "side": "buy",

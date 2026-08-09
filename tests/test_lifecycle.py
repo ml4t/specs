@@ -125,6 +125,10 @@ def test_opening_decisions_cannot_observe_current_close() -> None:
     pre_open.require_visible(InformationField.PRIOR_COMPLETED_DATA)
     opening.require_visible(InformationField.OFFICIAL_OPEN)
     close.require_visible(InformationField.CURRENT_CLOSE)
+    market_event = LIFECYCLE_V1.phase_spec(LifecyclePhase.MARKET_EVENT)
+    market_event.require_visible(InformationField.RUNNING_HIGH)
+    with pytest.raises(ProhibitedFieldAccessError, match="current_high.*market_event"):
+        market_event.require_visible(InformationField.CURRENT_HIGH)
     with pytest.raises(ProhibitedFieldAccessError, match="current_close.*pre_open"):
         pre_open.require_visible(InformationField.CURRENT_CLOSE)
     assert initialization.intents_allowed
@@ -171,6 +175,11 @@ def test_contract_rejects_missing_or_misordered_phases() -> None:
         replace(LIFECYCLE_V1.phases[0], causal_rank=cast("Any", True))
     with pytest.raises(TypeError, match="intents_allowed"):
         replace(LIFECYCLE_V1.phases[0], intents_allowed=cast("Any", 1))
+    with pytest.raises(ValueError, match="current_phase_fill_fields must be visible"):
+        replace(
+            LIFECYCLE_V1.phases[0],
+            current_phase_fill_fields=(InformationField.CURRENT_CLOSE,),
+        )
 
 
 @pytest.mark.parametrize("raw", [[], "phases", 1, [["run_start", "on_start"]]])
@@ -228,16 +237,21 @@ def test_market_event_variants_round_trip(kind: MarketEventKind) -> None:
 
 
 def test_market_event_serialization_does_not_share_nested_metadata() -> None:
-    original = event(metadata={"conditions": ["regular"]})
+    original = event(metadata={"venue": {"name": "fixture", "conditions": ["regular"]}})
     record = original.to_dict()
 
-    record["metadata"]["conditions"].append("late")
+    record["metadata"]["venue"]["conditions"].append("late")
 
-    assert original.metadata == {"conditions": ("regular",)}
+    assert original.metadata == {"venue": {"name": "fixture", "conditions": ("regular",)}}
+    assert MarketEvent.from_mapping(original.to_dict()) == original
     with pytest.raises(TypeError):
         cast("dict[str, Any]", original.metadata)["venue"] = "late"
+    with pytest.raises(TypeError):
+        cast("dict[str, Any]", original.metadata["venue"])["name"] = "late"
     with pytest.raises(AttributeError):
-        cast("list[str]", original.metadata["conditions"]).append("late")
+        cast("list[str]", cast("dict[str, Any]", original.metadata["venue"])["conditions"]).append(
+            "late"
+        )
     with pytest.raises(TypeError):
         hash(original)
 
@@ -392,6 +406,8 @@ def test_market_events_accept_zero_and_negative_instrument_prices() -> None:
     "metadata",
     [
         {"value": math.nan},
+        {"venue": {"latency": math.nan}},
+        {"venue": {1: "not a string key"}},
         {"timestamp": EVENT_TIME},
         {1: "not a string key"},
         ["not", "a", "mapping"],

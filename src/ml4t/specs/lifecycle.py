@@ -44,6 +44,8 @@ class InformationField(StrEnum):
     CURRENT_OPEN = "current_open"
     CURRENT_HIGH = "current_high"
     CURRENT_LOW = "current_low"
+    RUNNING_HIGH = "running_high"
+    RUNNING_LOW = "running_low"
     CURRENT_CLOSE = "current_close"
     POST_FILL_STATE = "post_fill_state"
 
@@ -385,6 +387,7 @@ class LifecyclePhaseSpec:
     cardinality: CallbackCardinality
     exception_semantics: CallbackExceptionSemantics
     causal_rank: int
+    current_phase_fill_fields: tuple[InformationField, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "phase", LifecyclePhase(self.phase))
@@ -392,6 +395,11 @@ class LifecyclePhaseSpec:
             self,
             "visible_fields",
             tuple(InformationField(field) for field in self.visible_fields),
+        )
+        object.__setattr__(
+            self,
+            "current_phase_fill_fields",
+            tuple(InformationField(field) for field in self.current_phase_fill_fields),
         )
         object.__setattr__(self, "cardinality", CallbackCardinality(self.cardinality))
         object.__setattr__(
@@ -406,6 +414,8 @@ class LifecyclePhaseSpec:
             raise TypeError("causal_rank must be an integer")
         if self.causal_rank < 0:
             raise ValueError("causal_rank must be non-negative")
+        if not set(self.current_phase_fill_fields).issubset(self.visible_fields):
+            raise ValueError("current_phase_fill_fields must be visible in the phase")
 
     def require_visible(self, field: InformationField) -> None:
         """Reject information that is unavailable in this phase."""
@@ -463,6 +473,9 @@ class LifecycleContract:
                     "cardinality": spec.cardinality.value,
                     "exception_semantics": spec.exception_semantics.value,
                     "causal_rank": spec.causal_rank,
+                    "current_phase_fill_fields": [
+                        field.value for field in spec.current_phase_fill_fields
+                    ],
                 }
                 for spec in self.phases
             ],
@@ -486,6 +499,9 @@ class LifecycleContract:
                 cardinality=CallbackCardinality(raw["cardinality"]),
                 exception_semantics=CallbackExceptionSemantics(raw["exception_semantics"]),
                 causal_rank=raw["causal_rank"],
+                current_phase_fill_fields=tuple(
+                    InformationField(field) for field in raw["current_phase_fill_fields"]
+                ),
             )
             for raw in raw_phases
         )
@@ -517,6 +533,7 @@ def require_historical_strategy_compatibility(strategy: str, callback_names: Seq
 _PRIOR = (InformationField.PRIOR_COMPLETED_DATA,)
 _OPEN = _PRIOR + (InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN)
 _INTRABAR = _OPEN + (InformationField.CURRENT_HIGH, InformationField.CURRENT_LOW)
+_MARKET_EVENT = _OPEN + (InformationField.RUNNING_HIGH, InformationField.RUNNING_LOW)
 _COMPLETE = _INTRABAR + (InformationField.CURRENT_CLOSE,)
 
 LIFECYCLE_V1 = LifecycleContract(
@@ -557,6 +574,7 @@ LIFECYCLE_V1 = LifecycleContract(
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
             3,
+            (InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN),
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.FILL_RECONCILIATION,
@@ -575,6 +593,7 @@ LIFECYCLE_V1 = LifecycleContract(
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
             5,
+            (InformationField.CURRENT_HIGH, InformationField.CURRENT_LOW),
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.CLOSE,
@@ -584,11 +603,12 @@ LIFECYCLE_V1 = LifecycleContract(
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
             6,
+            (InformationField.CURRENT_CLOSE,),
         ),
         LifecyclePhaseSpec(
             LifecyclePhase.MARKET_EVENT,
             "on_data",
-            _INTRABAR,
+            _MARKET_EVENT,
             True,
             CallbackCardinality.ONCE_PER_EVENT,
             CallbackExceptionSemantics.ROLLBACK_AND_ABORT,
@@ -620,6 +640,15 @@ def lifecycle_schema() -> dict[str, Any]:
         }
         if visible_fields:
             visible_fields_schema["prefixItems"] = visible_fields
+        fill_fields = [{"const": field.value} for field in spec.current_phase_fill_fields]
+        fill_fields_schema: dict[str, Any] = {
+            "type": "array",
+            "items": False,
+            "minItems": len(fill_fields),
+            "maxItems": len(fill_fields),
+        }
+        if fill_fields:
+            fill_fields_schema["prefixItems"] = fill_fields
         phase_schemas.append(
             {
                 "type": "object",
@@ -632,6 +661,7 @@ def lifecycle_schema() -> dict[str, Any]:
                     "cardinality",
                     "exception_semantics",
                     "causal_rank",
+                    "current_phase_fill_fields",
                 ],
                 "properties": {
                     "phase": {"const": spec.phase.value},
@@ -641,6 +671,7 @@ def lifecycle_schema() -> dict[str, Any]:
                     "cardinality": {"const": spec.cardinality.value},
                     "exception_semantics": {"const": spec.exception_semantics.value},
                     "causal_rank": {"const": spec.causal_rank},
+                    "current_phase_fill_fields": fill_fields_schema,
                 },
             }
         )

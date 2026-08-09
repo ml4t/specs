@@ -148,6 +148,7 @@ def rule_state(**overrides: Any) -> PositionRuleState:
 def test_golden_fixture_loads_unchanged_and_round_trips() -> None:
     fixture = canonical_intent_fixture()
     assert fixture == json.loads(FIXTURE_PATH.read_text())
+    assert json.dumps(fixture, indent=2, sort_keys=True) + "\n" == FIXTURE_PATH.read_text()
     assert json.loads(json.dumps(fixture)) == fixture
     restored_target = CanonicalTargetIntent.from_mapping(fixture["target"])
     restored_child = CanonicalChildOrderIntent.from_mapping(fixture["child"])
