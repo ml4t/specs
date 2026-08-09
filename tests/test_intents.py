@@ -125,6 +125,7 @@ def rule_state(**overrides: Any) -> PositionRuleState:
         "asset": "SPY",
         "activation": RuleActivation.ACTIVE,
         "entry_time": DECISION_TIME,
+        "entry_side": OrderSide.BUY,
         "entry_price": 100.0,
         "entry_quantity": 10.0,
         "high_water_mark": 110.0,
@@ -1058,10 +1059,24 @@ def test_position_rule_definition_mapping_rejects_malformed_collections(
         PositionRuleDefinition.from_mapping(record)
 
 
+def test_position_rule_definition_mapping_requires_parameter_fields() -> None:
+    record = PositionRuleDefinition("root", PositionRuleType.STOP_LOSS).to_dict()
+    record["parameters"] = [{"name": "pct"}]
+
+    with pytest.raises(ValueError, match="contain name and value"):
+        PositionRuleDefinition.from_mapping(record)
+
+
 @pytest.mark.parametrize(
     ("factory", "message"),
     [
         (lambda: PositionRuleDefinition("", PositionRuleType.STOP_LOSS), "rule_id"),
+        (
+            lambda: PositionRuleDefinition(
+                "rule", PositionRuleType.STOP_LOSS, parameters=cast("Any", 1)
+            ),
+            "iterable",
+        ),
         (
             lambda: PositionRuleDefinition(
                 "rule", PositionRuleType.STOP_LOSS, parameters=(("pct", 1), ("pct", 2))
@@ -1085,6 +1100,12 @@ def test_position_rule_definition_mapping_rejects_malformed_collections(
                 "rule", PositionRuleType.STOP_LOSS, parameters=(("pct", math.inf),)
             ),
             "finite",
+        ),
+        (
+            lambda: PositionRuleDefinition(
+                "rule", PositionRuleType.STOP_LOSS, parameters=cast("Any", (("pct",),))
+            ),
+            "two-item",
         ),
         (
             lambda: PositionRuleDefinition("rule", PositionRuleType.COMPOSITE, children=("a",)),
@@ -1282,7 +1303,23 @@ def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
 
 
 def test_position_rule_state_supports_negative_instrument_prices() -> None:
-    original = rule_state(entry_price=-10, high_water_mark=-5, low_water_mark=-40)
+    original = rule_state(
+        entry_price=-10,
+        high_water_mark=-5,
+        low_water_mark=-40,
+        max_favorable_excursion=0.5,
+        max_adverse_excursion=-3.0,
+    )
+
+    assert PositionRuleState.from_mapping(original.to_dict()) == original
+
+
+def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
+    original = rule_state(
+        entry_side=OrderSide.SELL,
+        max_favorable_excursion=0.05,
+        max_adverse_excursion=-0.1,
+    )
 
     assert PositionRuleState.from_mapping(original.to_dict()) == original
 
@@ -1295,12 +1332,17 @@ def test_position_rule_state_supports_negative_instrument_prices() -> None:
         ({"idempotency_key": ""}, ValueError, "idempotency_key"),
         ({"entry_time": datetime(2026, 8, 8)}, ValueError, "entry_time"),
         ({"entry_price": math.inf}, ValueError, "finite"),
+        ({"entry_price": 0}, ValueError, "non-zero"),
         ({"entry_quantity": 0}, ValueError, "entry_quantity"),
         ({"remaining_exit_quantity": -1}, ValueError, "between zero"),
         ({"remaining_exit_quantity": 11}, ValueError, "between zero"),
         ({"low_water_mark": 111}, ValueError, "must not exceed"),
+        ({"high_water_mark": 99}, ValueError, "entry_price must be between"),
+        ({"low_water_mark": 101}, ValueError, "entry_price must be between"),
         ({"max_favorable_excursion": -0.01}, ValueError, "non-negative fractional"),
         ({"max_adverse_excursion": 0.01}, ValueError, "non-positive fractional"),
+        ({"max_favorable_excursion": 0.2}, ValueError, "inconsistent.*water marks"),
+        ({"max_adverse_excursion": -0.1}, ValueError, "inconsistent.*water marks"),
         (
             {
                 "activation": RuleActivation.INACTIVE,

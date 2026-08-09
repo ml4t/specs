@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -769,22 +770,6 @@ class ExecutionPolicy:
         )
 
 
-_ORDER_POLICY_FIELD: dict[OrderType, str | None] = {
-    OrderType.MARKET: None,
-    OrderType.LIMIT: "limit",
-    OrderType.STOP: "stop",
-    OrderType.STOP_LIMIT: "stop_limit",
-    OrderType.TRAILING_STOP: "trailing",
-    OrderType.MOC: "close_auction",
-}
-
-_FILL_POLICY_FIELD: dict[FillEligibility, str | None] = {
-    FillEligibility.CURRENT_PHASE: None,
-    FillEligibility.NEXT_PHASE: None,
-    FillEligibility.OPENING_AUCTION: "opening_auction",
-    FillEligibility.CLOSE_AUCTION: "close_auction",
-}
-
 _CAPABILITY_POLICY_FIELD: dict[ExecutionCapability, str | None] = {
     ExecutionCapability.LIMIT: "limit",
     ExecutionCapability.STOP: "stop",
@@ -803,11 +788,7 @@ def validate_child_against_policy(
     """Reject a child order that requires behavior disabled by its execution policy."""
     fields = {
         field
-        for field in (
-            _ORDER_POLICY_FIELD[child.order_type],
-            _FILL_POLICY_FIELD[child.fill_eligibility],
-            *(_CAPABILITY_POLICY_FIELD[capability] for capability in child.capabilities),
-        )
+        for field in (_CAPABILITY_POLICY_FIELD[capability] for capability in child.capabilities)
         if field is not None
     }
     disabled = sorted(
@@ -864,9 +845,20 @@ class PositionRuleDefinition:
         if isinstance(self.children, str | bytes):
             raise TypeError("children must be an iterable of rule ids")
         object.__setattr__(self, "rule_type", PositionRuleType(self.rule_type))
+        try:
+            raw_parameters = tuple(self.parameters)
+        except TypeError:
+            raise TypeError("parameters must be an iterable of name-value pairs") from None
+        if any(
+            not isinstance(parameter, Sequence)
+            or isinstance(parameter, str | bytes)
+            or len(parameter) != 2
+            for parameter in raw_parameters
+        ):
+            raise TypeError("each parameter must be a two-item name-value sequence")
         parameters = tuple(
             (_non_empty(name, "rule parameter name"), _finite(value, f"rule parameter {name}"))
-            for name, value in self.parameters
+            for name, value in raw_parameters
         )
         children = tuple(_non_empty(child, "rule child") for child in self.children)
         object.__setattr__(self, "parameters", parameters)
@@ -903,6 +895,8 @@ class PositionRuleDefinition:
             raise TypeError("parameters must be a sequence")
         if any(not isinstance(parameter, Mapping) for parameter in raw_parameters):
             raise TypeError("each parameter must be a mapping")
+        if any("name" not in parameter or "value" not in parameter for parameter in raw_parameters):
+            raise ValueError("each parameter mapping must contain name and value")
         raw_children = value.get("children", ())
         if not isinstance(raw_children, Sequence) or isinstance(raw_children, str | bytes):
             raise TypeError("children must be a sequence")
@@ -1011,6 +1005,7 @@ class PositionRuleState:
     asset: str
     activation: RuleActivation
     entry_time: datetime
+    entry_side: OrderSide
     entry_price: float
     entry_quantity: float
     high_water_mark: float
@@ -1026,6 +1021,7 @@ class PositionRuleState:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "activation", RuleActivation(self.activation))
+        object.__setattr__(self, "entry_side", OrderSide(self.entry_side))
         object.__setattr__(self, "action", PositionActionType(self.action))
         object.__setattr__(self, "exit_reason", ExitReason(self.exit_reason))
         object.__setattr__(self, "evaluation_mode", EvaluationMode(self.evaluation_mode))
@@ -1051,14 +1047,33 @@ class PositionRuleState:
             object.__setattr__(self, name, _finite(getattr(self, name), name))
         if self.entry_quantity <= 0:
             raise ValueError("entry_quantity must be positive")
+        if self.entry_price == 0:
+            raise ValueError("entry_price must be non-zero for fractional excursions")
         if not 0 <= self.remaining_exit_quantity <= self.entry_quantity:
             raise ValueError("remaining_exit_quantity must be between zero and entry_quantity")
         if self.low_water_mark > self.high_water_mark:
             raise ValueError("low_water_mark must not exceed high_water_mark")
+        if not self.low_water_mark <= self.entry_price <= self.high_water_mark:
+            raise ValueError("entry_price must be between low_water_mark and high_water_mark")
         if self.max_favorable_excursion < 0:
             raise ValueError("max_favorable_excursion must be a non-negative fractional return")
         if self.max_adverse_excursion > 0:
             raise ValueError("max_adverse_excursion must be a non-positive fractional return")
+        price_scale = abs(self.entry_price)
+        if self.entry_side is OrderSide.BUY:
+            expected_favorable = (self.high_water_mark - self.entry_price) / price_scale
+            expected_adverse = (self.low_water_mark - self.entry_price) / price_scale
+        else:
+            expected_favorable = (self.entry_price - self.low_water_mark) / price_scale
+            expected_adverse = (self.entry_price - self.high_water_mark) / price_scale
+        if not math.isclose(
+            self.max_favorable_excursion, expected_favorable, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ValueError("max_favorable_excursion is inconsistent with position water marks")
+        if not math.isclose(
+            self.max_adverse_excursion, expected_adverse, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ValueError("max_adverse_excursion is inconsistent with position water marks")
         if (
             self.activation is RuleActivation.INACTIVE
             and self.action is not PositionActionType.HOLD
@@ -1083,6 +1098,7 @@ class PositionRuleState:
             "asset": self.asset,
             "activation": self.activation.value,
             "entry_time": self.entry_time.isoformat(),
+            "entry_side": self.entry_side.value,
             "entry_price": self.entry_price,
             "entry_quantity": self.entry_quantity,
             "high_water_mark": self.high_water_mark,
@@ -1105,6 +1121,7 @@ class PositionRuleState:
             asset=value["asset"],
             activation=RuleActivation(value["activation"]),
             entry_time=datetime.fromisoformat(value["entry_time"]),
+            entry_side=OrderSide(value["entry_side"]),
             entry_price=value["entry_price"],
             entry_quantity=value["entry_quantity"],
             high_water_mark=value["high_water_mark"],

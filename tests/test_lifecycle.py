@@ -156,6 +156,13 @@ def test_contract_rejects_missing_or_misordered_phases() -> None:
         LifecycleContract(LifecycleVersion.V1, cast("Any", ({"phase": "run_start"},)))
     with pytest.raises(ValueError, match="complete, unique, and in contract order"):
         LifecycleContract(LifecycleVersion.V1, LIFECYCLE_V1.phases[:-1])
+    swapped = list(LIFECYCLE_V1.phases)
+    swapped[0], swapped[1] = swapped[1], swapped[0]
+    with pytest.raises(ValueError, match="complete, unique, and in contract order"):
+        LifecycleContract(LifecycleVersion.V1, tuple(swapped))
+    duplicated = (*LIFECYCLE_V1.phases[:-1], LIFECYCLE_V1.phases[-2])
+    with pytest.raises(ValueError, match="complete, unique, and in contract order"):
+        LifecycleContract(LifecycleVersion.V1, duplicated)
     with pytest.raises(ValueError, match="callback"):
         replace(LIFECYCLE_V1.phases[0], callback="")
     with pytest.raises(ValueError, match="non-negative"):
