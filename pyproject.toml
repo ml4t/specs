@@ -51,6 +51,8 @@ Changelog = "https://github.com/ml4t/specs/releases"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.0",
+    "jsonschema>=4.0",
     "pip-audit>=2.10.0",
     "pytest>=8.0.0",
     "pytest-cov>=6.0",
@@ -73,7 +75,6 @@ addopts = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-fix = true
 
 [tool.ruff.lint]
 select = [

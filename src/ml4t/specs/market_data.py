@@ -101,16 +101,22 @@ class FeedSpec:
     @classmethod
     def from_object(cls, value: Any) -> FeedSpec:
         """Create a feed contract from another ML4T config or metadata object."""
+        return cls._from_object(value, set())
+
+    @classmethod
+    def _from_object(cls, value: Any, visited: set[int]) -> FeedSpec:
         if isinstance(value, FeedSpec):
             return value
         if isinstance(value, Mapping):
             return cls.from_mapping(value)
 
+        identity = id(value)
+        if identity in visited:
+            raise ValueError("feed spec metadata cannot contain reference cycles")
+        visited.add(identity)
         metadata = getattr(value, "metadata", None)
         if metadata is not None:
-            if metadata is value:
-                raise ValueError("feed spec metadata cannot refer to itself")
-            return cls.from_object(metadata)
+            return cls._from_object(metadata, visited)
 
         def pick(*names: str) -> Any:
             for name in names:

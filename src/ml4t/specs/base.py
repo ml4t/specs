@@ -35,7 +35,7 @@ class ArtifactStorage:
         partition_by = mapping.get("partition_by", ())
         if isinstance(partition_by, str):
             partition_by = (partition_by,)
-        elif not isinstance(partition_by, Sequence):
+        elif isinstance(partition_by, bytes) or not isinstance(partition_by, Sequence):
             raise TypeError("storage partition_by must be a string or sequence")
         return cls(
             path=mapping.get("path", ""),
@@ -61,7 +61,7 @@ class ArtifactProvenance:
         source_artifacts = mapping.get("source_artifacts", ())
         if isinstance(source_artifacts, str):
             source_artifacts = (source_artifacts,)
-        elif not isinstance(source_artifacts, Sequence):
+        elif isinstance(source_artifacts, bytes) or not isinstance(source_artifacts, Sequence):
             raise TypeError("provenance source_artifacts must be a string or sequence")
         return cls(
             source_artifacts=tuple(str(item) for item in source_artifacts),

@@ -1,5 +1,9 @@
 __pycache__/
 *.py[cod]
+.coverage
+.hypothesis/
+.workspace/transitions/
+.workspace/work/
 .pytest_cache/
 .ruff_cache/
 .venv/

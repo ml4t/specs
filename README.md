@@ -17,6 +17,8 @@ describe:
 
 - market data column mappings and feed semantics
 - artifact metadata and storage conventions
+- versioned strategy lifecycle and market-event semantics
+- canonical targets, child orders, execution assumptions, and position-rule state
 - lightweight YAML/JSON spec payloads
 
 It exists so the higher-level libraries can exchange consistent contracts without re-defining
@@ -24,7 +26,8 @@ the same dataclasses in multiple repos.
 
 Today it is used by:
 
-- `ml4t-backtest` for `FeedSpec` and market-data execution semantics
+- `ml4t-backtest` for feed, lifecycle, strategy-intent, execution, and position-rule semantics
+- `ml4t-live` for the same runtime-neutral execution contracts
 - `ml4t-engineer` for artifact metadata
 - `ml4t-diagnostic` for artifact and backtest-result integration
 - `ml4t-models` as an optional integration bridge when `ml4t-specs` is installed
@@ -85,6 +88,57 @@ The base artifact layer gives ML4T libraries a shared way to talk about persiste
 - `ArtifactStorage`
 - `ArtifactProvenance`
 - `ArtifactSpec`
+
+### Lifecycle And Market Events
+
+`LifecycleContract` defines callback ordering, available information, intent permissions,
+callback counts, exception behavior, and causal rank for each portable strategy phase.
+`LIFECYCLE_V1` is the supported contract. `MarketEvent` supplies versioned event identity,
+validated payloads, provider sequence or gap evidence, and immutable JSON metadata. Phase
+declaration order is the serialization order; `causal_rank` defines causal ordering.
+
+### Strategy And Execution Contracts
+
+`CanonicalTargetIntent` records a strategy decision before order construction.
+`CanonicalChildOrderIntent` records the resulting unsigned order, its target lineage, fill
+decision session, fill session, eligibility phase, time in force, and required execution
+capabilities. `eligibility_phase` is always a phase in `decision_session`. The two session fields
+permit a close decision to schedule a child for a later session's opening auction.
+Targets may schedule an arbitrary future effective session so allocation systems can register
+dated decisions in advance; venue calendars decide whether that date is tradable.
+`ExecutionPolicy` records the assumptions under which an engine or venue executes those orders.
+`PositionRulePolicy` and `PositionRuleState` make client-side and broker-native exit behavior
+portable and resumable. Persist one `PositionRuleState` per `rule_id` that carries runtime state,
+including composite parents and stateful leaves. Its remaining quantity is post-action; partial
+exit quantity and adjusted stop price are stored with the latest action.
+`SCALED_EXIT` sizes an exit order below the open position quantity; it does not require the venue
+to partially fill that smaller order, so it is independent of `allow_partial_fills`.
+Stop-loss, take-profit, and trailing-stop rules use the required fractional `pct` parameter in
+`(0, 1]`. Time exits use the required positive integer `max_bars`; scaled exits use ordered
+`ScaledExitTarget` values.
+
+These contracts serialize to JSON-compatible mappings. Their comparison helpers report exact
+field-level differences, including generated identities and timestamps. Callers comparing two
+engines must align those fields first. Auction fill eligibility and auction time-in-force values
+require the matching declared capability. A decision that observes a completed close cannot fill
+at that same close. Instrument prices may be negative, while quantities, trailing amounts, and
+trailing percentages remain positive. Favorable and adverse excursions are signed fractional
+returns. Use `validate_child_against_policy()` before submission to reject child orders that need
+execution behavior disabled by the selected policy. Use
+`validate_rule_policy_against_execution_policy()` before activating position rules.
+
+For intraday strategies, `NEXT_PHASE` from `INTRABAR` or `MARKET_EVENT` means the next event in
+that same phase. Cross-session opening fills use `OPENING_AUCTION` explicitly, with `OPG` time in
+force and the opening-auction capability.
+`CURRENT_PHASE`, including `IOC` and `FOK`, is available only for evolving `MARKET_EVENT`
+callbacks. Bar-based `INTRABAR` decisions have already observed the completed high and low and
+must use `NEXT_PHASE`. Engines must call `validate_event_against_phase()` before dispatch so a
+completed event cannot be presented as an evolving callback.
+
+`CanonicalChildOrderIntent` requires both `decision_session` and `effective_session`. An order
+decided before the opening auction uses `eligibility_phase=PRE_OPEN` with
+`fill_eligibility=OPENING_AUCTION`; using `eligibility_phase=OPENING_AUCTION` means the decision
+already observed that session's open and is rejected for same-open execution.
 
 ## Read And Write Spec Payloads
 

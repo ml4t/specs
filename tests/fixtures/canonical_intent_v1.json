@@ -1,0 +1,50 @@
+{
+  "child": {
+    "asset": "SPY",
+    "capabilities": [
+      "opening_auction"
+    ],
+    "child_intent_id": "child-1",
+    "decision_session": "2026-08-10",
+    "effective_session": "2026-08-10",
+    "eligibility_phase": "pre_open",
+    "fill_eligibility": "opening_auction",
+    "idempotency_key": "child-2026-08-10-SPY",
+    "lifecycle_version": "1",
+    "order_type": "market",
+    "parameters": {
+      "limit_price": null,
+      "stop_price": null,
+      "trail_amount": null,
+      "trail_percent": null
+    },
+    "quantity": 10.0,
+    "reason": "rebalance",
+    "session_policy": "regular",
+    "side": "buy",
+    "target_intent_id": "target-1",
+    "time_in_force": "opg"
+  },
+  "target": {
+    "cash_buffer": 0.05,
+    "decision_time": "2026-08-08T13:00:00+00:00",
+    "effective_phase": "pre_open",
+    "effective_session": "2026-08-10",
+    "idempotency_key": "target-2026-08-10",
+    "information_cutoff": "2026-08-08T12:59:59+00:00",
+    "intent_id": "target-1",
+    "lifecycle_version": "1",
+    "measure": "weight",
+    "position_rule_policy_id": null,
+    "reason": "rebalance",
+    "residual": "keep_cash",
+    "rounding": "toward_zero",
+    "targets": [
+      {
+        "asset": "SPY",
+        "measure": "weight",
+        "value": 0.5
+      }
+    ]
+  }
+}

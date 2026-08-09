@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+from pathlib import Path
 
 import pytest
 
@@ -117,6 +120,45 @@ def test_write_spec_payload_does_not_replace_valid_file_on_serialization_error(t
     assert read_spec_payload(path) == {"artifact_id": "valid"}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX permission bits")
+def test_write_spec_payload_preserves_existing_permissions(tmp_path) -> None:
+    path = tmp_path / "market_data.json"
+    path.write_text("{}\n")
+    path.chmod(0o640)
+
+    write_spec_payload({"artifact_id": "prices"}, path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX permission bits")
+def test_write_spec_payload_applies_umask_to_new_files(tmp_path) -> None:
+    path = tmp_path / "market_data.json"
+
+    previous_umask = os.umask(0o077)
+    try:
+        write_spec_payload({"artifact_id": "prices"}, path)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_write_spec_payload_retries_temporary_name_collisions(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tokens = iter(("collision", "available"))
+    monkeypatch.setattr(spec_io, "token_hex", lambda _length: next(tokens))
+    path = tmp_path / "market_data.json"
+    collision = tmp_path / ".market_data.json.collision"
+    collision.write_text("occupied")
+
+    write_spec_payload({"artifact_id": "prices"}, path)
+
+    assert read_spec_payload(path) == {"artifact_id": "prices"}
+    assert collision.read_text() == "occupied"
+
+
 def test_spec_io_supports_yml_and_empty_documents(tmp_path) -> None:
     path = tmp_path / "empty.yml"
     path.write_text("")
@@ -134,6 +176,30 @@ def test_read_spec_payload_copies_mapping() -> None:
     assert result is not source
 
 
+def test_spec_payload_rejects_keys_that_collide_after_normalization(tmp_path) -> None:
+    payload = {1: "numeric", "1": "text"}
+
+    with pytest.raises(ValueError, match="colliding key"):
+        read_spec_payload(payload)
+    with pytest.raises(ValueError, match="colliding key"):
+        write_spec_payload(payload, tmp_path / "collision.json")
+
+
+def test_write_spec_payload_cleans_up_when_temporary_permissions_fail(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_to_restrict(_path, _mode):
+        raise OSError("cannot restrict temporary file")
+
+    monkeypatch.setattr(Path, "chmod", fail_to_restrict)
+    path = tmp_path / "market_data.json"
+
+    with pytest.raises(OSError, match="cannot restrict"):
+        write_spec_payload({"artifact_id": "prices"}, path)
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_write_spec_payload_handles_temporary_file_creation_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -141,7 +207,7 @@ def test_write_spec_payload_handles_temporary_file_creation_failure(
     def fail_to_create(*_args, **_kwargs):
         raise OSError("no temporary file")
 
-    monkeypatch.setattr(spec_io, "NamedTemporaryFile", fail_to_create)
+    monkeypatch.setattr(spec_io, "_open_temporary_file", fail_to_create)
     path = tmp_path / "market_data.json"
 
     with pytest.raises(OSError, match="no temporary file"):
