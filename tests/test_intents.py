@@ -100,7 +100,7 @@ def execution_policy(**overrides: Any) -> ExecutionPolicy:
         "policy_id": "execution-1",
         "market_fill_phase": LifecyclePhase.OPENING_AUCTION,
         "opening_auction": ExecutionBehavior.BROKER_NATIVE,
-        "moc": ExecutionBehavior.BROKER_NATIVE,
+        "close_auction": ExecutionBehavior.BROKER_NATIVE,
         "limit": ExecutionBehavior.BROKER_NATIVE,
         "stop": ExecutionBehavior.CLIENT,
         "stop_limit": ExecutionBehavior.CLIENT,
@@ -419,6 +419,7 @@ def test_child_capability_order_is_canonical() -> None:
         ({"asset": ""}, ValueError, "asset"),
         ({"quantity": 0}, ValueError, "positive and unsigned"),
         ({"quantity": -1}, ValueError, "positive and unsigned"),
+        ({"quantity": 10**400}, ValueError, "finite"),
         ({"quantity": cast("Any", True)}, TypeError, "number"),
         ({"decision_session": DECISION_TIME}, TypeError, "decision_session"),
         ({"decision_session": cast("Any", "2026-08-10")}, TypeError, "decision_session"),
@@ -489,6 +490,16 @@ def test_child_capability_order_is_canonical() -> None:
             },
             ValueError,
             "current_open",
+        ),
+        (
+            {
+                "eligibility_phase": LifecyclePhase.INTRABAR,
+                "fill_eligibility": FillEligibility.CURRENT_PHASE,
+                "time_in_force": TimeInForce.IOC,
+                "capabilities": (),
+            },
+            ValueError,
+            "current_high, current_low",
         ),
         (
             {
@@ -803,6 +814,19 @@ def test_child_must_be_supported_by_execution_policy() -> None:
         validate_child_against_policy(
             execution_policy(limit=ExecutionBehavior.DISABLED), limit_child
         )
+    close_auction_child = child(
+        order_type=OrderType.LIMIT,
+        parameters=OrderParameters(limit_price=100),
+        eligibility_phase=LifecyclePhase.INTRABAR,
+        fill_eligibility=FillEligibility.CLOSE_AUCTION,
+        time_in_force=TimeInForce.CLS,
+        capabilities=(ExecutionCapability.LIMIT, ExecutionCapability.CLOSE_AUCTION),
+    )
+    with pytest.raises(ValueError, match="close_auction"):
+        validate_child_against_policy(
+            execution_policy(close_auction=ExecutionBehavior.DISABLED),
+            close_auction_child,
+        )
     with pytest.raises(ValueError, match="partial fills"):
         validate_child_against_policy(execution_policy(allow_partial_fills=False), partial_child)
     contingent_child = child(
@@ -839,7 +863,7 @@ def test_child_must_be_supported_by_execution_policy() -> None:
 
 def test_market_child_fill_phase_must_match_execution_policy() -> None:
     current_phase_child = child(
-        eligibility_phase=LifecyclePhase.INTRABAR,
+        eligibility_phase=LifecyclePhase.MARKET_EVENT,
         fill_eligibility=FillEligibility.CURRENT_PHASE,
         time_in_force=TimeInForce.IOC,
         capabilities=(),
@@ -858,14 +882,14 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
     )
 
     validate_child_against_policy(
-        execution_policy(market_fill_phase=LifecyclePhase.INTRABAR), current_phase_child
+        execution_policy(market_fill_phase=LifecyclePhase.MARKET_EVENT), current_phase_child
     )
     validate_child_against_policy(execution_policy(), next_phase_child)
     validate_child_against_policy(
         execution_policy(market_fill_phase=LifecyclePhase.MARKET_EVENT),
         later_rank_child,
     )
-    with pytest.raises(ValueError, match="intrabar.*opening_auction"):
+    with pytest.raises(ValueError, match="market_event.*opening_auction"):
         validate_child_against_policy(execution_policy(), current_phase_child)
     with pytest.raises(ValueError, match="no later fill phase"):
         child(
@@ -1348,7 +1372,7 @@ def test_direct_construction_normalizes_string_enum_values() -> None:
     direct_policy = execution_policy(
         market_fill_phase=cast("Any", "opening_auction"),
         opening_auction=cast("Any", "broker_native"),
-        moc=cast("Any", "broker_native"),
+        close_auction=cast("Any", "broker_native"),
         limit=cast("Any", "broker_native"),
         stop=cast("Any", "client"),
         stop_limit=cast("Any", "client"),

@@ -17,7 +17,10 @@ def non_empty(value: object, name: str) -> str:
 def finite(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError(f"{name} must be a number")
-    result = float(value)
+    try:
+        result = float(value)
+    except OverflowError:
+        raise ValueError(f"{name} must be finite") from None
     if not math.isfinite(result):
         raise ValueError(f"{name} must be finite")
     return result

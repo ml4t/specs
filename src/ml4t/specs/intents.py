@@ -393,6 +393,9 @@ _CURRENT_PHASE_INFORMATION_FIELDS: dict[LifecyclePhase, frozenset[InformationFie
     LifecyclePhase.OPENING_AUCTION: frozenset(
         {InformationField.OFFICIAL_OPEN, InformationField.CURRENT_OPEN}
     ),
+    LifecyclePhase.INTRABAR: frozenset(
+        {InformationField.CURRENT_HIGH, InformationField.CURRENT_LOW}
+    ),
     LifecyclePhase.CLOSE: frozenset({InformationField.CURRENT_CLOSE}),
 }
 
@@ -650,7 +653,7 @@ class ExecutionPolicy:
     policy_id: str
     market_fill_phase: LifecyclePhase
     opening_auction: ExecutionBehavior
-    moc: ExecutionBehavior
+    close_auction: ExecutionBehavior
     limit: ExecutionBehavior
     stop: ExecutionBehavior
     stop_limit: ExecutionBehavior
@@ -671,7 +674,7 @@ class ExecutionPolicy:
         object.__setattr__(self, "market_fill_phase", LifecyclePhase(self.market_fill_phase))
         for name in (
             "opening_auction",
-            "moc",
+            "close_auction",
             "limit",
             "stop",
             "stop_limit",
@@ -721,7 +724,7 @@ class ExecutionPolicy:
             "policy_id": self.policy_id,
             "market_fill_phase": self.market_fill_phase.value,
             "opening_auction": self.opening_auction.value,
-            "moc": self.moc.value,
+            "close_auction": self.close_auction.value,
             "limit": self.limit.value,
             "stop": self.stop.value,
             "stop_limit": self.stop_limit.value,
@@ -746,7 +749,7 @@ class ExecutionPolicy:
             policy_id=value["policy_id"],
             market_fill_phase=LifecyclePhase(value["market_fill_phase"]),
             opening_auction=ExecutionBehavior(value["opening_auction"]),
-            moc=ExecutionBehavior(value["moc"]),
+            close_auction=ExecutionBehavior(value["close_auction"]),
             limit=ExecutionBehavior(value["limit"]),
             stop=ExecutionBehavior(value["stop"]),
             stop_limit=ExecutionBehavior(value["stop_limit"]),
@@ -773,14 +776,14 @@ _ORDER_POLICY_FIELD: dict[OrderType, str | None] = {
     OrderType.STOP: "stop",
     OrderType.STOP_LIMIT: "stop_limit",
     OrderType.TRAILING_STOP: "trailing",
-    OrderType.MOC: "moc",
+    OrderType.MOC: "close_auction",
 }
 
 _FILL_POLICY_FIELD: dict[FillEligibility, str | None] = {
     FillEligibility.CURRENT_PHASE: None,
     FillEligibility.NEXT_PHASE: None,
     FillEligibility.OPENING_AUCTION: "opening_auction",
-    FillEligibility.CLOSE_AUCTION: "moc",
+    FillEligibility.CLOSE_AUCTION: "close_auction",
 }
 
 _CAPABILITY_POLICY_FIELD: dict[ExecutionCapability, str | None] = {
@@ -789,7 +792,7 @@ _CAPABILITY_POLICY_FIELD: dict[ExecutionCapability, str | None] = {
     ExecutionCapability.STOP_LIMIT: "stop_limit",
     ExecutionCapability.TRAILING_STOP: "trailing",
     ExecutionCapability.OPENING_AUCTION: "opening_auction",
-    ExecutionCapability.CLOSE_AUCTION: "moc",
+    ExecutionCapability.CLOSE_AUCTION: "close_auction",
     ExecutionCapability.PARTIAL_FILL: None,
     ExecutionCapability.CONTINGENT: "contingent",
 }
