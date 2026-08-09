@@ -323,8 +323,7 @@ class MarketEvent:
             _provider_sequence(self.provider_sequence, "provider_sequence"),
         )
         if (
-            self.provider_sequence is not None
-            and self.gap is not None
+            self.gap is not None
             and self.gap.current_sequence is not None
             and self.gap.current_sequence != self.provider_sequence
         ):
@@ -400,19 +399,27 @@ class LifecyclePhaseSpec:
     cardinality: CallbackCardinality
     exception_semantics: CallbackExceptionSemantics
     causal_rank: int
-    current_phase_fill_fields: tuple[InformationField, ...] = ()
+    current_phase_fill_conflicts: tuple[InformationField, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "phase", LifecyclePhase(self.phase))
+        visible_fields = tuple(InformationField(field) for field in self.visible_fields)
+        if len(set(visible_fields)) != len(visible_fields):
+            raise ValueError("visible_fields must be unique")
         object.__setattr__(
             self,
             "visible_fields",
-            tuple(InformationField(field) for field in self.visible_fields),
+            tuple(sorted(visible_fields, key=lambda field: field.value)),
         )
+        fill_conflicts = tuple(
+            InformationField(field) for field in self.current_phase_fill_conflicts
+        )
+        if len(set(fill_conflicts)) != len(fill_conflicts):
+            raise ValueError("current_phase_fill_conflicts must be unique")
         object.__setattr__(
             self,
-            "current_phase_fill_fields",
-            tuple(InformationField(field) for field in self.current_phase_fill_fields),
+            "current_phase_fill_conflicts",
+            tuple(sorted(fill_conflicts, key=lambda field: field.value)),
         )
         object.__setattr__(self, "cardinality", CallbackCardinality(self.cardinality))
         object.__setattr__(
@@ -427,8 +434,8 @@ class LifecyclePhaseSpec:
             raise TypeError("causal_rank must be an integer")
         if self.causal_rank < 0:
             raise ValueError("causal_rank must be non-negative")
-        if not set(self.current_phase_fill_fields).issubset(self.visible_fields):
-            raise ValueError("current_phase_fill_fields must be visible in the phase")
+        if not set(self.current_phase_fill_conflicts).issubset(self.visible_fields):
+            raise ValueError("current_phase_fill_conflicts must be visible in the phase")
 
     def require_visible(self, field: InformationField) -> None:
         """Reject information that is unavailable in this phase."""
@@ -486,8 +493,8 @@ class LifecycleContract:
                     "cardinality": spec.cardinality.value,
                     "exception_semantics": spec.exception_semantics.value,
                     "causal_rank": spec.causal_rank,
-                    "current_phase_fill_fields": [
-                        field.value for field in spec.current_phase_fill_fields
+                    "current_phase_fill_conflicts": [
+                        field.value for field in spec.current_phase_fill_conflicts
                     ],
                 }
                 for spec in self.phases
@@ -504,6 +511,18 @@ class LifecycleContract:
             raise TypeError("phases must be a sequence")
         if any(not isinstance(raw, Mapping) for raw in raw_phases):
             raise TypeError("each phase must be a mapping")
+        for raw in raw_phases:
+            _require_fields(
+                raw,
+                "phase",
+                "callback",
+                "visible_fields",
+                "intents_allowed",
+                "cardinality",
+                "exception_semantics",
+                "causal_rank",
+                "current_phase_fill_conflicts",
+            )
         phases = tuple(
             LifecyclePhaseSpec(
                 phase=LifecyclePhase(raw["phase"]),
@@ -513,13 +532,18 @@ class LifecycleContract:
                 cardinality=CallbackCardinality(raw["cardinality"]),
                 exception_semantics=CallbackExceptionSemantics(raw["exception_semantics"]),
                 causal_rank=raw["causal_rank"],
-                current_phase_fill_fields=tuple(
-                    InformationField(field) for field in raw.get("current_phase_fill_fields", ())
+                current_phase_fill_conflicts=tuple(
+                    InformationField(field) for field in raw["current_phase_fill_conflicts"]
                 ),
             )
             for raw in raw_phases
         )
-        return cls(version=version, phases=phases)
+        contract = cls(version=version, phases=phases)
+        if contract != LIFECYCLE_V1:
+            raise ValueError(
+                f"lifecycle contract does not match supported version {version.value!r}"
+            )
+        return contract
 
 
 def negotiate_lifecycle_version(
@@ -654,7 +678,7 @@ def lifecycle_schema() -> dict[str, Any]:
         }
         if visible_fields:
             visible_fields_schema["prefixItems"] = visible_fields
-        fill_fields = [{"const": field.value} for field in spec.current_phase_fill_fields]
+        fill_fields = [{"const": field.value} for field in spec.current_phase_fill_conflicts]
         fill_fields_schema: dict[str, Any] = {
             "type": "array",
             "items": False,
@@ -675,7 +699,7 @@ def lifecycle_schema() -> dict[str, Any]:
                     "cardinality",
                     "exception_semantics",
                     "causal_rank",
-                    "current_phase_fill_fields",
+                    "current_phase_fill_conflicts",
                 ],
                 "properties": {
                     "phase": {"const": spec.phase.value},
@@ -685,7 +709,7 @@ def lifecycle_schema() -> dict[str, Any]:
                     "cardinality": {"const": spec.cardinality.value},
                     "exception_semantics": {"const": spec.exception_semantics.value},
                     "causal_rank": {"const": spec.causal_rank},
-                    "current_phase_fill_fields": fill_fields_schema,
+                    "current_phase_fill_conflicts": fill_fields_schema,
                 },
             }
         )

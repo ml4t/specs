@@ -583,9 +583,11 @@ class CanonicalChildOrderIntent:
                 information_fields = frozenset(
                     _lifecycle_contract(self.lifecycle_version)
                     .phase_spec(self.eligibility_phase)
-                    .current_phase_fill_fields
+                    .current_phase_fill_conflicts
                 )
-            consumed = visible & information_fields
+                consumed = information_fields
+            else:
+                consumed = visible & information_fields
             if consumed:
                 fields = ", ".join(sorted(field.value for field in consumed))
                 raise ValueError(

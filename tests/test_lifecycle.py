@@ -88,6 +88,29 @@ def test_lifecycle_materializes_collections_and_normalizes_enums() -> None:
     assert LifecycleContract.from_mapping(contract.to_dict()) == contract
 
 
+def test_lifecycle_phase_collections_are_canonical_and_unique() -> None:
+    phase = replace(
+        LIFECYCLE_V1.phase_spec(LifecyclePhase.INTRABAR),
+        visible_fields=(
+            InformationField.PRIOR_COMPLETED_DATA,
+            InformationField.CURRENT_CLOSE,
+        ),
+        current_phase_fill_conflicts=(InformationField.CURRENT_CLOSE,),
+    )
+
+    assert phase.visible_fields == (
+        InformationField.CURRENT_CLOSE,
+        InformationField.PRIOR_COMPLETED_DATA,
+    )
+    with pytest.raises(ValueError, match="visible_fields must be unique"):
+        replace(phase, visible_fields=(InformationField.CURRENT_CLOSE,) * 2)
+    with pytest.raises(ValueError, match="current_phase_fill_conflicts must be unique"):
+        replace(
+            phase,
+            current_phase_fill_conflicts=(InformationField.CURRENT_CLOSE,) * 2,
+        )
+
+
 def test_lifecycle_schema_accepts_only_the_exact_versioned_contract() -> None:
     schema = lifecycle_schema()
     contract = LIFECYCLE_V1.to_dict()
@@ -175,10 +198,10 @@ def test_contract_rejects_missing_or_misordered_phases() -> None:
         replace(LIFECYCLE_V1.phases[0], causal_rank=cast("Any", True))
     with pytest.raises(TypeError, match="intents_allowed"):
         replace(LIFECYCLE_V1.phases[0], intents_allowed=cast("Any", 1))
-    with pytest.raises(ValueError, match="current_phase_fill_fields must be visible"):
+    with pytest.raises(ValueError, match="current_phase_fill_conflicts must be visible"):
         replace(
             LIFECYCLE_V1.phases[0],
-            current_phase_fill_fields=(InformationField.CURRENT_CLOSE,),
+            current_phase_fill_conflicts=(InformationField.CURRENT_CLOSE,),
         )
 
 
@@ -256,11 +279,18 @@ def test_market_event_serialization_does_not_share_nested_metadata() -> None:
         hash(original)
 
 
-def test_market_event_accepts_gap_evidence_without_sequence() -> None:
+def test_market_event_requires_gap_current_sequence_to_match_event() -> None:
     gap = GapEvidence(True, "provider sequence skipped", "10", "12")
-    original = event(provider_sequence=None, gap=gap)
-
+    with pytest.raises(ValueError, match="current_sequence must match provider_sequence"):
+        event(provider_sequence=None, gap=gap)
+    original = event(provider_sequence="12", gap=gap)
     assert MarketEvent.from_mapping(original.to_dict()) == original
+
+    sequence_less = event(
+        provider_sequence=None,
+        gap=GapEvidence(False, "provider has no sequence"),
+    )
+    assert MarketEvent.from_mapping(sequence_less.to_dict()) == sequence_less
     assert GapEvidence.from_mapping(
         {
             "detected": False,
@@ -342,14 +372,16 @@ def test_lifecycle_mappings_report_missing_required_fields() -> None:
         LifecycleContract.from_mapping(contract_record)
 
 
-def test_lifecycle_mapping_defaults_new_optional_phase_fields() -> None:
+def test_lifecycle_mapping_rejects_incomplete_or_altered_supported_contract() -> None:
     contract_record = LIFECYCLE_V1.to_dict()
-    for phase in contract_record["phases"]:
-        phase.pop("current_phase_fill_fields")
+    contract_record["phases"][0].pop("current_phase_fill_conflicts")
+    with pytest.raises(ValueError, match="current_phase_fill_conflicts"):
+        LifecycleContract.from_mapping(contract_record)
 
-    restored = LifecycleContract.from_mapping(contract_record)
-
-    assert all(not phase.current_phase_fill_fields for phase in restored.phases)
+    contract_record = LIFECYCLE_V1.to_dict()
+    contract_record["phases"][0]["callback"] = "renamed"
+    with pytest.raises(ValueError, match="does not match supported version '1'"):
+        LifecycleContract.from_mapping(contract_record)
 
 
 @pytest.mark.parametrize(
