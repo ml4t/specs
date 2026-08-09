@@ -104,9 +104,13 @@ eligibility, time in force, and required execution capabilities. `ExecutionPolic
 assumptions under which an engine or venue executes those orders. `PositionRulePolicy` and
 `PositionRuleState` make client-side and broker-native exit behavior portable and resumable.
 
-These contracts serialize to JSON-compatible mappings and compare independently of runtime-
-specific objects. Auction fill eligibility and auction time-in-force values require the matching
-declared capability. A decision that observes a completed close cannot fill at that same close.
+These contracts serialize to JSON-compatible mappings. Their comparison helpers report exact
+field-level differences, including generated identities and timestamps. Callers comparing two
+engines must align those fields first. Auction fill eligibility and auction time-in-force values
+require the matching declared capability. A decision that observes a completed close cannot fill
+at that same close. Instrument prices may be negative, while quantities, trailing amounts, and
+trailing percentages remain positive. Favorable and adverse excursions are signed fractional
+returns.
 
 ## Read And Write Spec Payloads
 

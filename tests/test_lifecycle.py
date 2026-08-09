@@ -72,6 +72,21 @@ def test_lifecycle_v1_is_complete_versioned_and_round_trips() -> None:
     assert lifecycle_schema()["properties"]["phases"]["minItems"] == len(LifecyclePhase)
 
 
+def test_lifecycle_materializes_collections_and_normalizes_enums() -> None:
+    first = replace(
+        LIFECYCLE_V1.phases[0],
+        phase=cast("Any", "run_start"),
+        visible_fields=cast("Any", []),
+        cardinality=cast("Any", "exactly_once"),
+        exception_semantics=cast("Any", "abort_before_side_effects"),
+    )
+    contract = LifecycleContract(cast("Any", "1"), cast("Any", [first, *LIFECYCLE_V1.phases[1:]]))
+
+    assert first.visible_fields == ()
+    assert contract.phases[0] == first
+    assert LifecycleContract.from_mapping(contract.to_dict()) == contract
+
+
 def test_lifecycle_schema_accepts_only_the_exact_versioned_contract() -> None:
     schema = lifecycle_schema()
     contract = LIFECYCLE_V1.to_dict()

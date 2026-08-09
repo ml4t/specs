@@ -345,6 +345,18 @@ class LifecyclePhaseSpec:
     causal_rank: int
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "phase", LifecyclePhase(self.phase))
+        object.__setattr__(
+            self,
+            "visible_fields",
+            tuple(InformationField(field) for field in self.visible_fields),
+        )
+        object.__setattr__(self, "cardinality", CallbackCardinality(self.cardinality))
+        object.__setattr__(
+            self,
+            "exception_semantics",
+            CallbackExceptionSemantics(self.exception_semantics),
+        )
         _non_empty(self.callback, "callback")
         if isinstance(self.causal_rank, bool) or not isinstance(self.causal_rank, int):
             raise TypeError("causal_rank must be an integer")
@@ -379,6 +391,8 @@ class LifecycleContract:
     _EXPECTED_PHASES: ClassVar[tuple[LifecyclePhase, ...]] = tuple(LifecyclePhase)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "version", negotiate_lifecycle_version(self.version))
+        object.__setattr__(self, "phases", tuple(self.phases))
         observed = tuple(spec.phase for spec in self.phases)
         if observed != self._EXPECTED_PHASES:
             raise ValueError(

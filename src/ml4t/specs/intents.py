@@ -199,6 +199,7 @@ class AssetTarget:
     value: float
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "measure", TargetMeasure(self.measure))
         _non_empty(self.asset, "asset")
         _finite(self.value, "target value")
 
@@ -227,6 +228,11 @@ class CanonicalTargetIntent:
     position_rule_policy_id: str | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "effective_phase", LifecyclePhase(self.effective_phase))
+        object.__setattr__(self, "measure", TargetMeasure(self.measure))
+        object.__setattr__(self, "rounding", RoundingPolicy(self.rounding))
+        object.__setattr__(self, "residual", ResidualPolicy(self.residual))
+        object.__setattr__(self, "reason", IntentReason(self.reason))
         _non_empty(self.intent_id, "intent_id")
         _non_empty(self.idempotency_key, "idempotency_key")
         object.__setattr__(self, "decision_time", _utc(self.decision_time, "decision_time"))
@@ -242,16 +248,17 @@ class CanonicalTargetIntent:
         ):
             raise TypeError("effective_session must be a date")
         _intent_phase(self.effective_phase)
-        if not self.targets:
+        if isinstance(self.targets, str | bytes):
+            raise TypeError("targets must be an iterable of AssetTarget values")
+        targets = tuple(self.targets)
+        if not targets:
             raise ValueError("targets must not be empty")
-        assets = tuple(target.asset for target in self.targets)
+        assets = tuple(target.asset for target in targets)
         if len(assets) != len(set(assets)):
             raise ValueError("targets must contain each asset once")
-        if any(target.measure is not self.measure for target in self.targets):
+        if any(target.measure is not self.measure for target in targets):
             raise ValueError("every target measure must match intent measure")
-        object.__setattr__(
-            self, "targets", tuple(sorted(self.targets, key=lambda item: item.asset))
-        )
+        object.__setattr__(self, "targets", tuple(sorted(targets, key=lambda item: item.asset)))
         cash_buffer = _finite(self.cash_buffer, "cash_buffer")
         if not 0 <= cash_buffer < 1:
             raise ValueError("cash_buffer must be in [0, 1)")
@@ -319,7 +326,11 @@ class OrderParameters:
     trail_percent: float | None = None
 
     def __post_init__(self) -> None:
-        for name in ("limit_price", "stop_price", "trail_amount", "trail_percent"):
+        for name in ("limit_price", "stop_price"):
+            value = getattr(self, name)
+            if value is not None:
+                _finite(value, name)
+        for name in ("trail_amount", "trail_percent"):
             value = getattr(self, name)
             if value is not None and _finite(value, name) <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -374,6 +385,15 @@ class CanonicalChildOrderIntent:
     lifecycle_version: LifecycleVersion = LifecycleVersion.V1
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "side", OrderSide(self.side))
+        object.__setattr__(self, "order_type", OrderType(self.order_type))
+        object.__setattr__(self, "eligibility_phase", LifecyclePhase(self.eligibility_phase))
+        object.__setattr__(self, "fill_eligibility", FillEligibility(self.fill_eligibility))
+        object.__setattr__(self, "time_in_force", TimeInForce(self.time_in_force))
+        object.__setattr__(self, "session_policy", SessionPolicy(self.session_policy))
+        object.__setattr__(self, "reason", IntentReason(self.reason))
+        capabilities = tuple(ExecutionCapability(value) for value in self.capabilities)
+        object.__setattr__(self, "capabilities", capabilities)
         for value, name in (
             (self.child_intent_id, "child_intent_id"),
             (self.target_intent_id, "target_intent_id"),
@@ -511,6 +531,18 @@ class ExecutionPolicy:
     bar_path: BarPathPolicy
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "market_fill_phase", LifecyclePhase(self.market_fill_phase))
+        for name in (
+            "opening_auction",
+            "moc",
+            "limit",
+            "stop",
+            "stop_limit",
+            "trailing",
+            "contingent",
+        ):
+            object.__setattr__(self, name, ExecutionBehavior(getattr(self, name)))
+        object.__setattr__(self, "bar_path", BarPathPolicy(self.bar_path))
         _non_empty(self.policy_id, "policy_id")
         if self.market_fill_phase not in {
             LifecyclePhase.OPENING_AUCTION,
@@ -582,8 +614,15 @@ class PositionRuleDefinition:
     composition: RuleComposition | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "rule_type", PositionRuleType(self.rule_type))
+        parameters = tuple((name, value) for name, value in self.parameters)
+        children = tuple(self.children)
+        object.__setattr__(self, "parameters", parameters)
+        object.__setattr__(self, "children", children)
+        if self.composition is not None:
+            object.__setattr__(self, "composition", RuleComposition(self.composition))
         _non_empty(self.rule_id, "rule_id")
-        names = tuple(name for name, _ in self.parameters)
+        names = tuple(name for name, _ in parameters)
         if len(names) != len(set(names)) or any(not name for name in names):
             raise ValueError("rule parameter names must be non-empty and unique")
         for name, value in self.parameters:
@@ -640,6 +679,8 @@ class PositionRulePolicy:
     lifecycle_version: LifecycleVersion = LifecycleVersion.V1
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "rules", tuple(self.rules))
+        object.__setattr__(self, "evaluation_mode", EvaluationMode(self.evaluation_mode))
         _non_empty(self.policy_id, "policy_id")
         _non_empty(self.root_rule_id, "root_rule_id")
         rule_ids = tuple(rule.rule_id for rule in self.rules)
@@ -699,7 +740,7 @@ class PositionRulePolicy:
 
 @dataclass(frozen=True, slots=True)
 class PositionRuleState:
-    """Portable state required to continue position-rule evaluation."""
+    """Portable rule state with favorable >= 0 and adverse <= 0 fractional excursions."""
 
     policy_id: str
     asset: str
@@ -718,6 +759,10 @@ class PositionRuleState:
     evaluation_mode: EvaluationMode
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "activation", RuleActivation(self.activation))
+        object.__setattr__(self, "action", PositionActionType(self.action))
+        object.__setattr__(self, "exit_reason", ExitReason(self.exit_reason))
+        object.__setattr__(self, "evaluation_mode", EvaluationMode(self.evaluation_mode))
         for value, name in (
             (self.policy_id, "policy_id"),
             (self.asset, "asset"),
@@ -735,14 +780,16 @@ class PositionRuleState:
             "remaining_exit_quantity",
         ):
             _finite(getattr(self, name), name)
-        if self.entry_price <= 0 or self.high_water_mark <= 0 or self.low_water_mark <= 0:
-            raise ValueError("position prices must be positive")
         if self.entry_quantity <= 0:
             raise ValueError("entry_quantity must be positive")
         if not 0 <= self.remaining_exit_quantity <= self.entry_quantity:
             raise ValueError("remaining_exit_quantity must be between zero and entry_quantity")
         if self.low_water_mark > self.high_water_mark:
             raise ValueError("low_water_mark must not exceed high_water_mark")
+        if self.max_favorable_excursion < 0:
+            raise ValueError("max_favorable_excursion must be a non-negative fractional return")
+        if self.max_adverse_excursion > 0:
+            raise ValueError("max_adverse_excursion must be a non-positive fractional return")
         if self.action in {PositionActionType.HOLD, PositionActionType.ADJUST_STOP}:
             if self.exit_reason is not ExitReason.NONE:
                 raise ValueError("hold and adjust_stop actions require exit reason none")
@@ -809,14 +856,14 @@ def _compare_intent_records(
 def compare_target_intents(
     left: CanonicalTargetIntent, right: CanonicalTargetIntent
 ) -> IntentComparison:
-    """Compare strategy decisions before venue-dependent outcomes."""
+    """Return an exact field-level diff, including identity and decision timestamps."""
     return _compare_intent_records(left.to_dict(), right.to_dict())
 
 
 def compare_child_intents(
     left: CanonicalChildOrderIntent, right: CanonicalChildOrderIntent
 ) -> IntentComparison:
-    """Compare child orders without comparing venue fill outcomes."""
+    """Return an exact field-level diff of child records before venue fill outcomes."""
     return _compare_intent_records(left.to_dict(), right.to_dict())
 
 

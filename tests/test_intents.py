@@ -186,6 +186,19 @@ def test_target_order_is_canonical_by_asset() -> None:
     assert compare_target_intents(first, second).equivalent
 
 
+def test_target_materializes_single_pass_iterables_before_validation() -> None:
+    valid_targets = (
+        AssetTarget(asset, TargetMeasure.WEIGHT, value) for asset, value in [("SPY", 1)]
+    )
+    original = target(targets=valid_targets)
+
+    assert original.targets == (AssetTarget("SPY", TargetMeasure.WEIGHT, 1),)
+    with pytest.raises(ValueError, match="measure"):
+        target(targets=(AssetTarget("SPY", TargetMeasure.QUANTITY, 1) for _ in range(1)))
+    with pytest.raises(TypeError, match="iterable"):
+        target(targets=cast("Any", "SPY"))
+
+
 @pytest.mark.parametrize(
     ("overrides", "error", "message"),
     [
@@ -200,7 +213,7 @@ def test_target_order_is_canonical_by_asset() -> None:
         ({"information_cutoff": DECISION_TIME + timedelta(seconds=1)}, ValueError, "must not"),
         ({"effective_session": DECISION_TIME}, TypeError, "date"),
         ({"effective_session": cast("Any", "2026-08-10")}, TypeError, "date"),
-        ({"effective_phase": LifecyclePhase.RUN_START}, ValueError, "does not allow"),
+        ({"effective_phase": cast("Any", "run_start")}, ValueError, "does not allow"),
         ({"targets": ()}, ValueError, "must not be empty"),
         (
             {
@@ -465,8 +478,9 @@ def test_child_rejection_is_atomic(
 @pytest.mark.parametrize(
     ("parameters", "error", "message"),
     [
-        ({"limit_price": 0}, ValueError, "positive"),
-        ({"stop_price": -1}, ValueError, "positive"),
+        ({"limit_price": math.inf}, ValueError, "finite"),
+        ({"stop_price": math.nan}, ValueError, "finite"),
+        ({"trail_amount": 0}, ValueError, "positive"),
         ({"trail_amount": math.inf}, ValueError, "finite"),
         ({"trail_percent": cast("Any", True)}, TypeError, "number"),
         ({"trail_percent": 1.01}, ValueError, "at most 1"),
@@ -477,6 +491,13 @@ def test_order_parameters_reject_invalid_values(
 ) -> None:
     with pytest.raises(error, match=message):
         OrderParameters(**parameters)
+
+
+def test_order_parameters_support_nonpositive_instrument_prices() -> None:
+    parameters = OrderParameters(limit_price=-10, stop_price=0)
+
+    assert parameters.limit_price == -10
+    assert parameters.stop_price == 0
 
 
 def test_partial_fill_remainder_is_validated() -> None:
@@ -516,7 +537,7 @@ def test_execution_policy_round_trip_and_records_all_assumptions() -> None:
         ({"market_fill_phase": LifecyclePhase.RUN_START}, ValueError, "market fills"),
         ({"market_fill_phase": LifecyclePhase.RUN_END}, ValueError, "market fills"),
         ({"market_fill_phase": LifecyclePhase.CAUSAL_INITIALIZATION}, ValueError, "market fills"),
-        ({"market_fill_phase": LifecyclePhase.CLOSE}, ValueError, "market fills"),
+        ({"market_fill_phase": cast("Any", "close")}, ValueError, "market fills"),
     ],
 )
 def test_execution_policy_validation(
@@ -559,6 +580,26 @@ def test_position_rule_definition_and_policy_round_trip() -> None:
 
     assert PositionRulePolicy.from_mapping(original.to_dict()) == original
     assert PositionRuleDefinition.from_mapping(stop.to_dict()) == stop
+
+
+def test_rule_contracts_materialize_mutable_collections() -> None:
+    leaf = PositionRuleDefinition(
+        "leaf",
+        cast("Any", "stop_loss"),
+        parameters=cast("Any", [["pct", 0.05]]),
+        children=cast("Any", []),
+    )
+    policy = PositionRulePolicy(
+        "rules-1",
+        "leaf",
+        cast("Any", [leaf]),
+        cast("Any", "client"),
+    )
+
+    assert leaf.parameters == (("pct", 0.05),)
+    assert leaf.children == ()
+    assert policy.rules == (leaf,)
+    assert PositionRulePolicy.from_mapping(policy.to_dict()) == policy
 
 
 @pytest.mark.parametrize(
@@ -726,6 +767,12 @@ def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
     assert PositionRuleState.from_mapping(exit_state.to_dict()) == exit_state
 
 
+def test_position_rule_state_supports_negative_instrument_prices() -> None:
+    original = rule_state(entry_price=-10, high_water_mark=-5, low_water_mark=-40)
+
+    assert PositionRuleState.from_mapping(original.to_dict()) == original
+
+
 @pytest.mark.parametrize(
     ("overrides", "error", "message"),
     [
@@ -734,13 +781,12 @@ def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
         ({"idempotency_key": ""}, ValueError, "idempotency_key"),
         ({"entry_time": datetime(2026, 8, 8)}, ValueError, "entry_time"),
         ({"entry_price": math.inf}, ValueError, "finite"),
-        ({"entry_price": 0}, ValueError, "prices"),
-        ({"high_water_mark": 0}, ValueError, "prices"),
-        ({"low_water_mark": 0}, ValueError, "prices"),
         ({"entry_quantity": 0}, ValueError, "entry_quantity"),
         ({"remaining_exit_quantity": -1}, ValueError, "between zero"),
         ({"remaining_exit_quantity": 11}, ValueError, "between zero"),
         ({"low_water_mark": 111}, ValueError, "must not exceed"),
+        ({"max_favorable_excursion": -0.01}, ValueError, "non-negative fractional"),
+        ({"max_adverse_excursion": 0.01}, ValueError, "non-positive fractional"),
         ({"exit_reason": ExitReason.SIGNAL}, ValueError, "hold and adjust_stop"),
         (
             {"action": PositionActionType.ADJUST_STOP, "exit_reason": ExitReason.STOP_LOSS},
@@ -773,6 +819,52 @@ def test_intent_comparison_identifies_only_canonical_differences() -> None:
     assert child_difference.differences == ("quantity",)
     assert not child_difference.equivalent
     assert compare_child_intents(first_child, first_child).equivalent
+    assert compare_target_intents(
+        first_target, replace(first_target, intent_id="other")
+    ).differences == ("intent_id",)
+
+
+def test_direct_construction_normalizes_string_enum_values() -> None:
+    direct_target = target(
+        effective_phase=cast("Any", "pre_open"),
+        measure=cast("Any", "weight"),
+        rounding=cast("Any", "toward_zero"),
+        residual=cast("Any", "keep_cash"),
+        reason=cast("Any", "rebalance"),
+        targets=(AssetTarget("SPY", cast("Any", "weight"), 0.5),),
+    )
+    direct_child = child(
+        side=cast("Any", "buy"),
+        order_type=cast("Any", "market"),
+        eligibility_phase=cast("Any", "pre_open"),
+        fill_eligibility=cast("Any", "opening_auction"),
+        time_in_force=cast("Any", "opg"),
+        session_policy=cast("Any", "regular"),
+        capabilities=cast("Any", ("opening_auction",)),
+        reason=cast("Any", "rebalance"),
+    )
+    direct_policy = execution_policy(
+        market_fill_phase=cast("Any", "opening_auction"),
+        opening_auction=cast("Any", "broker_native"),
+        moc=cast("Any", "broker_native"),
+        limit=cast("Any", "broker_native"),
+        stop=cast("Any", "client"),
+        stop_limit=cast("Any", "client"),
+        trailing=cast("Any", "client"),
+        contingent=cast("Any", "disabled"),
+        bar_path=cast("Any", "reject_ambiguous"),
+    )
+    direct_state = rule_state(
+        activation=cast("Any", "active"),
+        action=cast("Any", "hold"),
+        exit_reason=cast("Any", "none"),
+        evaluation_mode=cast("Any", "client"),
+    )
+
+    assert CanonicalTargetIntent.from_mapping(direct_target.to_dict()) == direct_target
+    assert CanonicalChildOrderIntent.from_mapping(direct_child.to_dict()) == direct_child
+    assert ExecutionPolicy.from_mapping(direct_policy.to_dict()) == direct_policy
+    assert PositionRuleState.from_mapping(direct_state.to_dict()) == direct_state
 
 
 def test_child_lineage_validation() -> None:
