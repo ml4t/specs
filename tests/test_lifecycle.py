@@ -340,6 +340,11 @@ def test_market_event_normalizes_string_provider_sequence() -> None:
             ValueError,
             "must differ",
         ),
+        (
+            {"detected": True, "previous_sequence": 12, "current_sequence": 10},
+            ValueError,
+            "must increase",
+        ),
     ],
 )
 def test_gap_evidence_validates_sequence_identity(

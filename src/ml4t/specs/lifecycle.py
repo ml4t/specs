@@ -24,7 +24,7 @@ class LifecycleVersion(StrEnum):
 
 
 class LifecyclePhase(StrEnum):
-    """Ordered portable strategy phases."""
+    """Portable strategy phase labels in serialization order."""
 
     RUN_START = "run_start"
     CAUSAL_INITIALIZATION = "causal_initialization"
@@ -184,6 +184,13 @@ class GapEvidence:
             raise TypeError("detected gap sequences must have the same type")
         if self.detected and self.previous_sequence == self.current_sequence:
             raise ValueError("detected gap sequences must differ")
+        if (
+            self.detected
+            and isinstance(self.previous_sequence, int)
+            and isinstance(self.current_sequence, int)
+            and self.previous_sequence >= self.current_sequence
+        ):
+            raise ValueError("detected integer gap sequences must increase")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> GapEvidence:
@@ -483,7 +490,7 @@ class LifecyclePhaseSpec:
 
 @dataclass(frozen=True, slots=True)
 class LifecycleContract:
-    """One complete ordered portable lifecycle version."""
+    """One complete portable lifecycle version in serialization order."""
 
     version: LifecycleVersion
     phases: tuple[LifecyclePhaseSpec, ...]

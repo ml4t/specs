@@ -45,6 +45,7 @@ from ml4t.specs import (
     compare_target_intents,
     validate_child_against_policy,
     validate_child_lineage,
+    validate_rule_policy_against_execution_policy,
     validate_state_against_policy,
     validate_target_against_rule_policy,
 )
@@ -343,6 +344,7 @@ def test_child_order_types_round_trip(
     original = child(
         order_type=order_type,
         parameters=parameters,
+        eligibility_phase=LifecyclePhase.INTRABAR,
         fill_eligibility=eligibility,
         time_in_force=time_in_force,
         capabilities=capabilities,
@@ -398,11 +400,13 @@ def test_auction_semantics_require_matching_capability(
 def test_child_capability_order_is_canonical() -> None:
     capabilities = (ExecutionCapability.PARTIAL_FILL, ExecutionCapability.CONTINGENT)
     first = child(
+        eligibility_phase=LifecyclePhase.INTRABAR,
         fill_eligibility=FillEligibility.NEXT_PHASE,
         time_in_force=TimeInForce.DAY,
         capabilities=capabilities,
     )
     second = child(
+        eligibility_phase=LifecyclePhase.INTRABAR,
         fill_eligibility=FillEligibility.NEXT_PHASE,
         time_in_force=TimeInForce.DAY,
         capabilities=tuple(reversed(capabilities)),
@@ -717,6 +721,7 @@ def test_child_rejects_irrelevant_order_parameters(
         child(
             order_type=order_type,
             parameters=parameters,
+            eligibility_phase=LifecyclePhase.INTRABAR,
             fill_eligibility=FillEligibility.NEXT_PHASE,
             time_in_force=TimeInForce.DAY,
             capabilities=capabilities,
@@ -873,6 +878,7 @@ def test_child_must_be_supported_by_execution_policy() -> None:
     with pytest.raises(ValueError, match="partial fills"):
         validate_child_against_policy(execution_policy(allow_partial_fills=False), partial_child)
     contingent_child = child(
+        eligibility_phase=LifecyclePhase.INTRABAR,
         fill_eligibility=FillEligibility.NEXT_PHASE,
         time_in_force=TimeInForce.DAY,
         capabilities=(ExecutionCapability.CONTINGENT,),
@@ -913,12 +919,6 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
         time_in_force=TimeInForce.IOC,
         capabilities=(),
     )
-    next_phase_child = child(
-        eligibility_phase=LifecyclePhase.PRE_OPEN,
-        fill_eligibility=FillEligibility.NEXT_PHASE,
-        time_in_force=TimeInForce.DAY,
-        capabilities=(),
-    )
     later_rank_child = child(
         eligibility_phase=LifecyclePhase.OPENING_AUCTION,
         fill_eligibility=FillEligibility.NEXT_PHASE,
@@ -929,13 +929,29 @@ def test_market_child_fill_phase_must_match_execution_policy() -> None:
     validate_child_against_policy(
         execution_policy(market_fill_phase=LifecyclePhase.MARKET_EVENT), current_phase_child
     )
-    validate_child_against_policy(execution_policy(), next_phase_child)
     validate_child_against_policy(
         execution_policy(market_fill_phase=LifecyclePhase.MARKET_EVENT),
         later_rank_child,
     )
     with pytest.raises(ValueError, match="market_event.*opening_auction"):
         validate_child_against_policy(execution_policy(), current_phase_child)
+    with pytest.raises(ValueError, match="must use opening_auction eligibility"):
+        child(
+            eligibility_phase=LifecyclePhase.PRE_OPEN,
+            fill_eligibility=FillEligibility.NEXT_PHASE,
+            time_in_force=TimeInForce.DAY,
+            capabilities=(),
+        )
+    current_phase_limit = child(
+        order_type=OrderType.LIMIT,
+        parameters=OrderParameters(limit_price=100),
+        eligibility_phase=LifecyclePhase.MARKET_EVENT,
+        fill_eligibility=FillEligibility.CURRENT_PHASE,
+        time_in_force=TimeInForce.IOC,
+        capabilities=(ExecutionCapability.LIMIT,),
+    )
+    with pytest.raises(ValueError, match="market_event.*opening_auction"):
+        validate_child_against_policy(execution_policy(), current_phase_limit)
     with pytest.raises(ValueError, match="no later fill phase"):
         child(
             eligibility_phase=LifecyclePhase.CLOSE,
@@ -1398,12 +1414,16 @@ def test_position_rule_policy_accepts_deep_acyclic_graph() -> None:
 
 def test_position_rule_state_round_trip_for_hold_adjustment_and_exit() -> None:
     hold = rule_state()
-    adjustment = rule_state(action=PositionActionType.ADJUST_STOP)
+    adjustment = rule_state(
+        action=PositionActionType.ADJUST_STOP,
+        adjusted_stop_price=102,
+    )
     exit_state = rule_state(
         activation=RuleActivation.TRIGGERED,
         remaining_exit_quantity=4,
         action=PositionActionType.EXIT_PARTIAL,
         exit_reason=ExitReason.STOP_LOSS,
+        action_quantity=2,
     )
     complete = rule_state(
         activation=RuleActivation.COMPLETE,
@@ -1477,6 +1497,33 @@ def test_position_rule_state_and_target_must_match_policy() -> None:
         validate_target_against_rule_policy(target_with_policy, future_policy)
 
 
+def test_position_rule_policy_must_match_execution_behavior() -> None:
+    trailing = PositionRuleDefinition("trail", PositionRuleType.TRAILING_STOP)
+    client_rules = PositionRulePolicy("rules-1", "trail", (trailing,), EvaluationMode.CLIENT)
+
+    validate_rule_policy_against_execution_policy(execution_policy(), client_rules)
+    with pytest.raises(ValueError, match="disables trailing behavior"):
+        validate_rule_policy_against_execution_policy(
+            execution_policy(trailing=ExecutionBehavior.DISABLED), client_rules
+        )
+
+    native_rules = replace(client_rules, evaluation_mode=EvaluationMode.BROKER_NATIVE)
+    with pytest.raises(ValueError, match="requires broker-native trailing"):
+        validate_rule_policy_against_execution_policy(execution_policy(), native_rules)
+    validate_rule_policy_against_execution_policy(
+        execution_policy(trailing=ExecutionBehavior.BROKER_NATIVE), native_rules
+    )
+
+    timed = PositionRuleDefinition("time", PositionRuleType.TIME_EXIT)
+    timed_rules = PositionRulePolicy("rules-2", "time", (timed,), EvaluationMode.CLIENT)
+    validate_rule_policy_against_execution_policy(execution_policy(), timed_rules)
+
+    mismatched_execution = execution_policy()
+    object.__setattr__(mismatched_execution, "lifecycle_version", cast("Any", "other"))
+    with pytest.raises(ValueError, match="lifecycle versions"):
+        validate_rule_policy_against_execution_policy(mismatched_execution, client_rules)
+
+
 def test_position_rule_state_supports_negative_instrument_prices() -> None:
     original = rule_state(
         entry_price=-10,
@@ -1513,6 +1560,45 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
         ({"remaining_exit_quantity": -1}, ValueError, "between zero"),
         ({"remaining_exit_quantity": 11}, ValueError, "between zero"),
         ({"remaining_exit_quantity": 0}, ValueError, "requires a complete"),
+        (
+            {
+                "activation": RuleActivation.TRIGGERED,
+                "action": PositionActionType.EXIT_PARTIAL,
+                "exit_reason": ExitReason.STOP_LOSS,
+            },
+            ValueError,
+            "requires action_quantity",
+        ),
+        (
+            {
+                "activation": RuleActivation.TRIGGERED,
+                "action": PositionActionType.EXIT_PARTIAL,
+                "exit_reason": ExitReason.STOP_LOSS,
+                "action_quantity": 0,
+            },
+            ValueError,
+            "action_quantity must be in",
+        ),
+        ({"action_quantity": 1}, ValueError, "only valid for exit_partial"),
+        (
+            {
+                "activation": RuleActivation.TRIGGERED,
+                "remaining_exit_quantity": 9,
+                "action": PositionActionType.EXIT_PARTIAL,
+                "exit_reason": ExitReason.STOP_LOSS,
+                "action_quantity": 2,
+            },
+            ValueError,
+            "exceed entry_quantity",
+        ),
+        (
+            {"action": PositionActionType.ADJUST_STOP},
+            ValueError,
+            "requires adjusted_stop_price",
+        ),
+        ({"adjusted_stop_price": 99}, ValueError, "only valid for adjust_stop"),
+        ({"action_quantity": math.inf}, ValueError, "finite"),
+        ({"adjusted_stop_price": cast("Any", True)}, TypeError, "number"),
         (
             {
                 "activation": RuleActivation.TRIGGERED,
@@ -1565,7 +1651,11 @@ def test_short_position_rule_state_uses_low_as_favorable_water_mark() -> None:
         ({"lifecycle_version": cast("Any", "2")}, ValueError, "version"),
         ({"exit_reason": ExitReason.SIGNAL}, ValueError, "untriggered hold"),
         (
-            {"action": PositionActionType.ADJUST_STOP, "exit_reason": ExitReason.STOP_LOSS},
+            {
+                "action": PositionActionType.ADJUST_STOP,
+                "exit_reason": ExitReason.STOP_LOSS,
+                "adjusted_stop_price": 99,
+            },
             ValueError,
             "adjust_stop action",
         ),

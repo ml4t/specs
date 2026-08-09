@@ -591,6 +591,12 @@ class CanonicalChildOrderIntent:
                 raise ValueError(
                     f"fill eligibility would consume already visible information: {fields}"
                 )
+        if eligibility is FillEligibility.NEXT_PHASE and _later_market_fill_phases(
+            self.eligibility_phase, self.lifecycle_version
+        ) == {LifecyclePhase.OPENING_AUCTION}:
+            raise ValueError(
+                "next_phase resolving to the opening auction must use opening_auction eligibility"
+            )
         if (
             eligibility is FillEligibility.NEXT_PHASE
             and same_session
@@ -896,7 +902,7 @@ def validate_child_against_policy(
     )
     if not supports_session:
         raise ValueError(f"execution policy does not support session {child.session_policy.value}")
-    if child.order_type is OrderType.MARKET and child.fill_eligibility in {
+    if child.fill_eligibility in {
         FillEligibility.CURRENT_PHASE,
         FillEligibility.NEXT_PHASE,
     }:
@@ -908,7 +914,7 @@ def validate_child_against_policy(
         if policy.market_fill_phase not in valid_fill_phases:
             phases = ", ".join(sorted(phase.value for phase in valid_fill_phases))
             raise ValueError(
-                f"market order needs fill phase {phases}, but policy fills at "
+                f"child order needs fill phase {phases}, but policy fills at "
                 f"{policy.market_fill_phase.value}"
             )
 
@@ -1097,7 +1103,7 @@ class PositionRulePolicy:
 
 @dataclass(frozen=True, slots=True)
 class PositionRuleState:
-    """Portable rule state with a per-evaluation action and latched trigger reason."""
+    """Portable post-action rule state with action payload and latched trigger reason."""
 
     policy_id: str
     rule_id: str
@@ -1116,6 +1122,8 @@ class PositionRuleState:
     action: PositionActionType
     exit_reason: ExitReason
     evaluation_mode: EvaluationMode
+    action_quantity: float | None = None
+    adjusted_stop_price: float | None = None
     lifecycle_version: LifecycleVersion = LifecycleVersion.V1
 
     def __post_init__(self) -> None:
@@ -1124,6 +1132,18 @@ class PositionRuleState:
         object.__setattr__(self, "action", PositionActionType(self.action))
         object.__setattr__(self, "exit_reason", ExitReason(self.exit_reason))
         object.__setattr__(self, "evaluation_mode", EvaluationMode(self.evaluation_mode))
+        if self.action_quantity is not None:
+            object.__setattr__(
+                self,
+                "action_quantity",
+                _finite(self.action_quantity, "action_quantity"),
+            )
+        if self.adjusted_stop_price is not None:
+            object.__setattr__(
+                self,
+                "adjusted_stop_price",
+                _finite(self.adjusted_stop_price, "adjusted_stop_price"),
+            )
         object.__setattr__(
             self, "lifecycle_version", negotiate_lifecycle_version(self.lifecycle_version)
         )
@@ -1191,6 +1211,22 @@ class PositionRuleState:
             raise ValueError("triggered and complete position rules require an exit reason")
         if self.activation is RuleActivation.COMPLETE and self.remaining_exit_quantity != 0:
             raise ValueError("complete position rules require zero remaining exit quantity")
+        if self.action is PositionActionType.EXIT_PARTIAL:
+            if self.action_quantity is None:
+                raise ValueError("exit_partial action requires action_quantity")
+            if not 0 < self.action_quantity <= self.entry_quantity:
+                raise ValueError("action_quantity must be in (0, entry_quantity]")
+            if self.action_quantity + self.remaining_exit_quantity > self.entry_quantity:
+                raise ValueError(
+                    "action_quantity and remaining_exit_quantity exceed entry_quantity"
+                )
+        elif self.action_quantity is not None:
+            raise ValueError("action_quantity is only valid for exit_partial action")
+        if self.action is PositionActionType.ADJUST_STOP:
+            if self.adjusted_stop_price is None:
+                raise ValueError("adjust_stop action requires adjusted_stop_price")
+        elif self.adjusted_stop_price is not None:
+            raise ValueError("adjusted_stop_price is only valid for adjust_stop action")
         if (
             self.action is PositionActionType.ADJUST_STOP
             and self.exit_reason is not ExitReason.NONE
@@ -1223,6 +1259,8 @@ class PositionRuleState:
             "action": self.action.value,
             "exit_reason": self.exit_reason.value,
             "evaluation_mode": self.evaluation_mode.value,
+            "action_quantity": self.action_quantity,
+            "adjusted_stop_price": self.adjusted_stop_price,
             "lifecycle_version": self.lifecycle_version.value,
         }
 
@@ -1248,6 +1286,8 @@ class PositionRuleState:
             "action",
             "exit_reason",
             "evaluation_mode",
+            "action_quantity",
+            "adjusted_stop_price",
         )
         return cls(
             policy_id=value["policy_id"],
@@ -1267,6 +1307,8 @@ class PositionRuleState:
             action=PositionActionType(value["action"]),
             exit_reason=ExitReason(value["exit_reason"]),
             evaluation_mode=EvaluationMode(value["evaluation_mode"]),
+            action_quantity=value["action_quantity"],
+            adjusted_stop_price=value["adjusted_stop_price"],
             lifecycle_version=value.get("lifecycle_version", LifecycleVersion.V1.value),
         )
 
@@ -1276,6 +1318,12 @@ _RULE_EXIT_REASON: dict[PositionRuleType, ExitReason] = {
     PositionRuleType.TAKE_PROFIT: ExitReason.TAKE_PROFIT,
     PositionRuleType.TRAILING_STOP: ExitReason.TRAILING_STOP,
     PositionRuleType.TIME_EXIT: ExitReason.TIME_EXIT,
+}
+
+_RULE_EXECUTION_FIELD: dict[PositionRuleType, str] = {
+    PositionRuleType.STOP_LOSS: "stop",
+    PositionRuleType.TAKE_PROFIT: "limit",
+    PositionRuleType.TRAILING_STOP: "trailing",
 }
 
 
@@ -1299,6 +1347,32 @@ def validate_state_against_policy(policy: PositionRulePolicy, state: PositionRul
             f"state exit reason {state.exit_reason.value} is incompatible with rule type "
             f"{rules[state.rule_id].rule_type.value}"
         )
+
+
+def validate_rule_policy_against_execution_policy(
+    execution: ExecutionPolicy, rules: PositionRulePolicy
+) -> None:
+    """Reject rule behaviors unsupported by the selected execution policy."""
+    if execution.lifecycle_version is not rules.lifecycle_version:
+        raise ValueError("position-rule and execution policy lifecycle versions do not match")
+    for rule in rules.rules:
+        field = _RULE_EXECUTION_FIELD.get(rule.rule_type)
+        if field is None:
+            continue
+        behavior = getattr(execution, field)
+        if behavior is ExecutionBehavior.DISABLED:
+            raise ValueError(
+                f"execution policy disables {field} behavior required by "
+                f"{rule.rule_type.value} rule {rule.rule_id!r}"
+            )
+        if (
+            rules.evaluation_mode is EvaluationMode.BROKER_NATIVE
+            and behavior is not ExecutionBehavior.BROKER_NATIVE
+        ):
+            raise ValueError(
+                f"broker-native {rule.rule_type.value} rule {rule.rule_id!r} requires "
+                f"broker-native {field} execution behavior"
+            )
 
 
 def validate_target_against_rule_policy(
@@ -1427,6 +1501,7 @@ __all__ = [
     "compare_target_intents",
     "validate_child_against_policy",
     "validate_child_lineage",
+    "validate_rule_policy_against_execution_policy",
     "validate_state_against_policy",
     "validate_target_against_rule_policy",
 ]

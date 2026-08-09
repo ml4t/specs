@@ -94,7 +94,8 @@ The base artifact layer gives ML4T libraries a shared way to talk about persiste
 `LifecycleContract` defines callback ordering, available information, intent permissions,
 callback counts, exception behavior, and causal rank for each portable strategy phase.
 `LIFECYCLE_V1` is the supported contract. `MarketEvent` supplies versioned event identity,
-validated payloads, provider sequence or gap evidence, and immutable JSON metadata.
+validated payloads, provider sequence or gap evidence, and immutable JSON metadata. Phase
+declaration order is the serialization order; `causal_rank` defines causal ordering.
 
 ### Strategy And Execution Contracts
 
@@ -108,7 +109,8 @@ dated decisions in advance; venue calendars decide whether that date is tradable
 `ExecutionPolicy` records the assumptions under which an engine or venue executes those orders.
 `PositionRulePolicy` and `PositionRuleState` make client-side and broker-native exit behavior
 portable and resumable. Persist one `PositionRuleState` per `rule_id` that carries runtime state,
-including composite parents and stateful leaves.
+including composite parents and stateful leaves. Its remaining quantity is post-action; partial
+exit quantity and adjusted stop price are stored with the latest action.
 
 These contracts serialize to JSON-compatible mappings. Their comparison helpers report exact
 field-level differences, including generated identities and timestamps. Callers comparing two
@@ -117,7 +119,8 @@ require the matching declared capability. A decision that observes a completed c
 at that same close. Instrument prices may be negative, while quantities, trailing amounts, and
 trailing percentages remain positive. Favorable and adverse excursions are signed fractional
 returns. Use `validate_child_against_policy()` before submission to reject child orders that need
-execution behavior disabled by the selected policy.
+execution behavior disabled by the selected policy. Use
+`validate_rule_policy_against_execution_policy()` before activating position rules.
 
 For intraday strategies, `NEXT_PHASE` from `INTRABAR` or `MARKET_EVENT` means the next event in
 that same phase. Cross-session opening fills use `OPENING_AUCTION` explicitly, with `OPG` time in

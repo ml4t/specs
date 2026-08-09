@@ -41,6 +41,7 @@ from .intents import (
     compare_target_intents,
     validate_child_against_policy,
     validate_child_lineage,
+    validate_rule_policy_against_execution_policy,
     validate_state_against_policy,
     validate_target_against_rule_policy,
 )
@@ -152,6 +153,7 @@ __all__ = [
     "validate_child_against_policy",
     "validate_child_lineage",
     "validate_event_against_phase",
+    "validate_rule_policy_against_execution_policy",
     "validate_state_against_policy",
     "validate_target_against_rule_policy",
     "write_spec_payload",
