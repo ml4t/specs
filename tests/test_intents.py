@@ -179,30 +179,92 @@ def test_golden_fixture_loads_unchanged_and_round_trips() -> None:
 
 
 @given(
-    values=st.lists(
-        st.floats(allow_nan=False, allow_infinity=False, width=64),
+    target_values=st.lists(
+        st.tuples(
+            st.floats(allow_nan=False, allow_infinity=False, width=64),
+            st.one_of(st.none(), st.sampled_from(("rules-a", "rules-b"))),
+        ),
         min_size=1,
         max_size=8,
     ),
     measure=st.sampled_from(TargetMeasure),
 )
-def test_generated_target_intents_round_trip(values: list[float], measure: TargetMeasure) -> None:
+def test_generated_target_intents_round_trip(
+    target_values: list[tuple[float, str | None]], measure: TargetMeasure
+) -> None:
     original = target(
         measure=measure,
         targets=tuple(
-            AssetTarget(f"ASSET-{index:03d}", measure, value) for index, value in enumerate(values)
+            AssetTarget(
+                f"ASSET-{index:03d}",
+                measure,
+                value,
+                position_rule_policy_id=policy_id,
+            )
+            for index, (value, policy_id) in enumerate(target_values)
         ),
     )
     restored = CanonicalTargetIntent.from_mapping(original.to_dict())
 
     assert restored == original
-    assert tuple(item.value for item in restored.targets) == tuple(values)
+    assert tuple(item.value for item in restored.targets) == tuple(
+        value for value, _ in target_values
+    )
 
 
 def test_target_round_trip_and_optional_position_rule_policy() -> None:
     original = target(position_rule_policy_id="rules-1")
 
     assert CanonicalTargetIntent.from_mapping(original.to_dict()) == original
+
+
+def test_asset_target_position_rule_policy_round_trip_preserves_legacy_shape() -> None:
+    legacy = AssetTarget("SPY", TargetMeasure.WEIGHT, 0.5)
+    expected_legacy = {"asset": "SPY", "measure": "weight", "value": 0.5}
+
+    assert legacy.to_dict() == expected_legacy
+    assert AssetTarget.from_mapping(expected_legacy) == legacy
+
+    target_with_policy = AssetTarget(
+        "QQQ",
+        TargetMeasure.WEIGHT,
+        0.4,
+        position_rule_policy_id=" trailing-5 ",
+    )
+    assert target_with_policy.position_rule_policy_id == "trailing-5"
+    assert target_with_policy.to_dict() == {
+        "asset": "QQQ",
+        "measure": "weight",
+        "value": 0.4,
+        "position_rule_policy_id": "trailing-5",
+    }
+    assert AssetTarget.from_mapping(target_with_policy.to_dict()) == target_with_policy
+
+
+@pytest.mark.parametrize("policy_id", ["", " "])
+def test_asset_target_rejects_empty_position_rule_policy_id(policy_id: str) -> None:
+    with pytest.raises(ValueError, match="position_rule_policy_id"):
+        AssetTarget(
+            "SPY",
+            TargetMeasure.WEIGHT,
+            0.5,
+            position_rule_policy_id=policy_id,
+        )
+
+
+def test_target_rejects_mixed_intent_and_asset_rule_policy_modes() -> None:
+    with pytest.raises(ValueError, match="intent-level.*target-level"):
+        target(
+            position_rule_policy_id="default-stop",
+            targets=(
+                AssetTarget(
+                    "SPY",
+                    TargetMeasure.WEIGHT,
+                    0.5,
+                    position_rule_policy_id="asset-stop",
+                ),
+            ),
+        )
 
 
 def test_target_order_is_canonical_by_asset() -> None:
@@ -1637,9 +1699,20 @@ def test_position_rule_state_and_target_must_match_policy() -> None:
     policy = PositionRulePolicy("rules-1", "stop", (stop,), EvaluationMode.CLIENT)
     state = rule_state()
     target_with_policy = target(position_rule_policy_id="rules-1")
+    target_with_asset_policy = target(
+        targets=(
+            AssetTarget(
+                "SPY",
+                TargetMeasure.WEIGHT,
+                0.5,
+                position_rule_policy_id="rules-1",
+            ),
+        )
+    )
 
     validate_state_against_policy(policy, state)
     validate_target_against_rule_policy(target_with_policy, policy)
+    validate_target_against_rule_policy(target_with_asset_policy, policy)
 
     with pytest.raises(ValueError, match="policy_id"):
         validate_state_against_policy(replace(policy, policy_id="other"), state)
@@ -1693,6 +1766,11 @@ def test_position_rule_state_and_target_must_match_policy() -> None:
 
     with pytest.raises(ValueError, match="position_rule_policy_id"):
         validate_target_against_rule_policy(target(), policy)
+    with pytest.raises(ValueError, match="position_rule_policy_id"):
+        validate_target_against_rule_policy(
+            target_with_asset_policy,
+            replace(policy, policy_id="unreferenced"),
+        )
     future_policy = replace(policy, policy_id="rules-1")
     object.__setattr__(future_policy, "lifecycle_version", cast("Any", "other"))
     with pytest.raises(ValueError, match="lifecycle version"):

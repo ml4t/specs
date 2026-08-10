@@ -200,20 +200,35 @@ class AssetTarget:
     asset: str
     measure: TargetMeasure
     value: float
+    position_rule_policy_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "measure", TargetMeasure(self.measure))
         object.__setattr__(self, "asset", _non_empty(self.asset, "asset"))
         object.__setattr__(self, "value", _finite(self.value, "target value"))
+        if self.position_rule_policy_id is not None:
+            object.__setattr__(
+                self,
+                "position_rule_policy_id",
+                _non_empty(self.position_rule_policy_id, "position_rule_policy_id"),
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible asset target."""
-        return {"asset": self.asset, "measure": self.measure.value, "value": self.value}
+        result = {"asset": self.asset, "measure": self.measure.value, "value": self.value}
+        if self.position_rule_policy_id is not None:
+            result["position_rule_policy_id"] = self.position_rule_policy_id
+        return result
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssetTarget:
         _require_fields(value, "asset", "measure", "value")
-        return cls(value["asset"], TargetMeasure(value["measure"]), value["value"])
+        return cls(
+            value["asset"],
+            TargetMeasure(value["measure"]),
+            value["value"],
+            position_rule_policy_id=value.get("position_rule_policy_id"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,6 +306,10 @@ class CanonicalTargetIntent:
                 "position_rule_policy_id",
                 _non_empty(self.position_rule_policy_id, "position_rule_policy_id"),
             )
+            if any(target.position_rule_policy_id is not None for target in self.targets):
+                raise ValueError(
+                    "intent-level and target-level position rule policy modes cannot be combined"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible canonical target."""
@@ -1478,7 +1497,14 @@ def validate_target_against_rule_policy(
     target: CanonicalTargetIntent, policy: PositionRulePolicy
 ) -> None:
     """Reject a target whose referenced rule policy identity or version does not match."""
-    if target.position_rule_policy_id != policy.policy_id:
+    referenced_policy_ids = {
+        item.position_rule_policy_id
+        for item in target.targets
+        if item.position_rule_policy_id is not None
+    }
+    if target.position_rule_policy_id is not None:
+        referenced_policy_ids.add(target.position_rule_policy_id)
+    if policy.policy_id not in referenced_policy_ids:
         raise ValueError("target position_rule_policy_id does not match position-rule policy")
     if target.lifecycle_version is not policy.lifecycle_version:
         raise ValueError("target lifecycle version does not match position-rule policy")
