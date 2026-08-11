@@ -1,0 +1,42 @@
+site_name: ML4T Specs
+site_description: Shared runtime-neutral contracts for ML4T libraries
+site_url: https://www.ml4trading.io/docs/specs/
+repo_url: https://github.com/ml4t/specs
+repo_name: ml4t/specs
+
+theme:
+  name: material
+  font: false
+  features:
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_root_heading: true
+            show_root_full_path: false
+            members_order: source
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Contract guide: contracts.md
+  - API reference: api.md
+
+strict: true

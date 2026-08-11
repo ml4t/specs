@@ -27,6 +27,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pyyaml>=6.0",
 ]
+
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -49,10 +50,20 @@ Repository = "https://github.com/ml4t/specs"
 Issues = "https://github.com/ml4t/specs/issues"
 Changelog = "https://github.com/ml4t/specs/releases"
 
+[project.optional-dependencies]
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5,<10",
+    "mkdocstrings[python]>=0.24,<1",
+]
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.0",
     "jsonschema>=4.0",
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5,<10",
+    "mkdocstrings[python]>=0.24,<1",
     "pip-audit>=2.10.0",
     "pytest>=8.0.0",
     "pytest-cov>=6.0",
