@@ -807,6 +807,12 @@ dev = [
     { name = "twine" },
     { name = "ty" },
 ]
+test = [
+    { name = "hypothesis" },
+    { name = "jsonschema" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -830,6 +836,12 @@ dev = [
     { name = "ruff", specifier = ">=0.8.0" },
     { name = "twine", specifier = ">=6.2.0" },
     { name = "ty" },
+]
+test = [
+    { name = "hypothesis", specifier = ">=6.0" },
+    { name = "jsonschema", specifier = ">=4.0" },
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-cov", specifier = ">=6.0" },
 ]
 
 [[package]]
