@@ -55,7 +55,7 @@ Changelog = "https://github.com/ml4t/specs/releases"
 docs = [
     "mkdocs>=1.6,<2",
     "mkdocs-material>=9.5,<10",
-    "mkdocstrings[python]>=0.24,<1",
+    "mkdocstrings[python]>=0.24,<2",
 ]
 
 [dependency-groups]
@@ -69,7 +69,7 @@ dev = [
     { include-group = "test" },
     "mkdocs>=1.6,<2",
     "mkdocs-material>=9.5,<10",
-    "mkdocstrings[python]>=0.24,<1",
+    "mkdocstrings[python]>=0.24,<2",
     "pip-audit>=2.10.0",
     "ruff>=0.8.0",
     "twine>=6.2.0",
