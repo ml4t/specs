@@ -257,6 +257,7 @@ class MarketDataSchema:
     low_col: str = "low"
     close_col: str = "close"
     volume_col: str = "volume"
+    vwap_col: str | None = None
     bid_col: str | None = None
     ask_col: str | None = None
     mid_col: str | None = None
@@ -294,6 +295,7 @@ class MarketDataSchema:
             low_col=mapping.get("low_col", "low"),
             close_col=mapping.get("close_col", "close"),
             volume_col=mapping.get("volume_col", "volume"),
+            vwap_col=optional_str(mapping.get("vwap_col")),
             bid_col=optional_str(mapping.get("bid_col")),
             ask_col=optional_str(mapping.get("ask_col")),
             mid_col=optional_str(mapping.get("mid_col")),

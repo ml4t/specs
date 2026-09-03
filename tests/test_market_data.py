@@ -364,3 +364,13 @@ class TestVwapCol:
         # so a caller passing vwap_col=None must not clear one already declared.
         spec = FeedSpec(vwap_col="vwap").with_overrides(vwap_col=None)
         assert spec.vwap_col == "vwap"
+
+    def test_survives_market_data_spec_projection(self):
+        spec = MarketDataSpec.from_mapping(
+            {"artifact_id": "nasdaq", "schema": {"vwap_col": "finra_vwap"}}
+        )
+
+        assert spec.schema.vwap_col == "finra_vwap"
+        assert spec.to_dict()["schema"]["vwap_col"] == "finra_vwap"
+        assert spec.to_feed_spec().vwap_col == "finra_vwap"
+        assert FeedSpec.from_any(spec.to_dict()).vwap_col == "finra_vwap"
