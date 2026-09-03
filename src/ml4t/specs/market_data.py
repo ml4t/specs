@@ -32,6 +32,7 @@ class FeedSpec:
         "high_col": ("high_col",),
         "low_col": ("low_col",),
         "volume_col": ("volume_col",),
+        "vwap_col": ("vwap_col",),
         "bid_col": ("bid_col",),
         "ask_col": ("ask_col",),
         "mid_col": ("mid_col",),
@@ -63,6 +64,11 @@ class FeedSpec:
     low_col: str = "low"
     close_col: str = "close"
     volume_col: str = "volume"
+    # No default. A feed that does not carry a volume-weighted average price must not
+    # silently supply a substitute for one: a consumer asking for VWAP is asking for a
+    # price no other column approximates, and the close is not a worse VWAP, it is a
+    # different quantity.
+    vwap_col: str | None = None
     bid_col: str | None = None
     ask_col: str | None = None
     mid_col: str | None = None
