@@ -339,3 +339,38 @@ def test_feed_spec_rejects_indirect_metadata_cycles() -> None:
 
     with pytest.raises(ValueError, match="reference cycles"):
         FeedSpec.from_object(first)
+
+
+class TestVwapCol:
+    """A feed declares its VWAP column or has none; nothing substitutes for one."""
+
+    def test_defaults_to_none(self):
+        # Unlike open/high/low/close/volume, VWAP has no conventional column name to
+        # guess at, and guessing wrong is worse than not carrying it.
+        assert FeedSpec().vwap_col is None
+
+    def test_round_trips_through_a_mapping(self):
+        assert FeedSpec.from_mapping({"vwap_col": "vwap"}).vwap_col == "vwap"
+
+    def test_round_trips_through_an_object(self):
+        spec = FeedSpec.from_any(SimpleNamespace(vwap_col="finra_vwap"))
+        assert spec.vwap_col == "finra_vwap"
+
+    def test_survives_with_overrides(self):
+        assert FeedSpec().with_overrides(vwap_col="vwap").vwap_col == "vwap"
+
+    def test_an_override_of_none_leaves_a_declared_column_alone(self):
+        # with_overrides treats None as "not supplied" for every other optional column,
+        # so a caller passing vwap_col=None must not clear one already declared.
+        spec = FeedSpec(vwap_col="vwap").with_overrides(vwap_col=None)
+        assert spec.vwap_col == "vwap"
+
+    def test_survives_market_data_spec_projection(self):
+        spec = MarketDataSpec.from_mapping(
+            {"artifact_id": "nasdaq", "schema": {"vwap_col": "finra_vwap"}}
+        )
+
+        assert spec.schema.vwap_col == "finra_vwap"
+        assert spec.to_dict()["schema"]["vwap_col"] == "finra_vwap"
+        assert spec.to_feed_spec().vwap_col == "finra_vwap"
+        assert FeedSpec.from_any(spec.to_dict()).vwap_col == "finra_vwap"
