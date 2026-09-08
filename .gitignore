@@ -2,8 +2,10 @@ __pycache__/
 *.py[cod]
 .coverage
 .hypothesis/
-.workspace/transitions/
-.workspace/work/
+.workspace/
+.claude/
+.codex/
+CLAUDE.md
 .pytest_cache/
 .ruff_cache/
 .venv/
