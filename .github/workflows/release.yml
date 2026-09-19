@@ -271,7 +271,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
-          uv run --no-project
+          uv run --no-project --with packaging
           python scripts/verify_published_release.py
           --manifest candidate/candidate.json
           --repository "${{ github.repository }}"
