@@ -31,13 +31,13 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --python ${{ env.PYTHON_VERSION }} --dev
+        run: uv sync --locked --python ${{ env.PYTHON_VERSION }} --dev
 
       - name: Run ruff check
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ scripts/
 
       - name: Run ruff format check
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ scripts/
 
   typecheck:
     name: Type Check
@@ -54,7 +54,7 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --python ${{ env.PYTHON_VERSION }} --dev
+        run: uv sync --locked --python ${{ env.PYTHON_VERSION }} --dev
 
       - name: Run ty check
         run: uv run ty check
@@ -110,7 +110,7 @@ jobs:
           allow-prereleases: true
 
       - name: Install dependencies
-        run: uv sync --python python --dev
+        run: uv sync --locked --python python --dev
 
       - name: Import package
         run: uv run --python python python -c "import ml4t.specs"
