@@ -7,7 +7,7 @@
 Serializable, runtime-neutral contracts for market data, artifacts, strategy lifecycles, and
 execution across the ML4T library ecosystem.
 
-The stable support matrix is CPython 3.12 through 3.14 on Linux, macOS, and Windows.
+The stable support matrix is CPython 3.12, 3.13, and 3.14 on Linux, macOS, and Windows.
 CPython 3.15 prereleases are tested on all three operating systems but are not advertised as
 stable until Python 3.15 is final.
 
