@@ -288,6 +288,13 @@ def test_workflows_enforce_documented_release_and_docs_contracts() -> None:
     assert candidate_name in artifact_names("build", "actions/upload-artifact")
     assert docs_name in artifact_names("build", "actions/upload-artifact")
     assert artifact_names("documentation", "actions/download-artifact") == [docs_name]
+    deployed_docs_verification = next(
+        step["run"]
+        for step in release["jobs"]["documentation"]["steps"]
+        if step.get("name") == "Verify deployed documentation identity"
+    )
+    assert "--attempts 24" in deployed_docs_verification
+    assert "--delay 10" in deployed_docs_verification
     for job in ("publish", "github-release", "post-publication"):
         assert artifact_names(job, "actions/download-artifact") == [candidate_name]
     assert release["jobs"]["publish"]["needs"] == ["preflight", "documentation"]
