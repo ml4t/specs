@@ -300,6 +300,12 @@ def test_workflows_enforce_documented_release_and_docs_contracts() -> None:
     assert release["jobs"]["publish"]["needs"] == ["preflight", "documentation"]
     assert release["jobs"]["github-release"]["needs"] == ["preflight", "publish"]
     assert release["jobs"]["post-publication"]["needs"] == ["preflight", "github-release"]
+    published_verification = next(
+        step["run"]
+        for step in release["jobs"]["post-publication"]["steps"]
+        if step.get("name") == "Verify PyPI metadata and GitHub release digests"
+    )
+    assert "uv run --no-project --with packaging" in published_verification
 
 
 def test_external_workflow_actions_use_full_commit_pins() -> None:
