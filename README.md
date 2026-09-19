@@ -39,6 +39,27 @@ Today it is used by:
 pip install ml4t-specs
 ```
 
+## Quick Start
+
+Normalize provider-specific field names into a portable feed contract:
+
+```python
+from ml4t.specs import FeedSpec
+
+feed = FeedSpec.from_mapping(
+    {
+        "time_col": "date",
+        "symbol_col": "ticker",
+        "price_col": "settle",
+        "close_col": "settle",
+        "calendar": "NYSE",
+    }
+)
+assert feed.timestamp_col == "date"
+assert feed.entity_col == "ticker"
+assert feed.price_col == "settle"
+```
+
 ## Main Types
 
 ### FeedSpec
@@ -171,6 +192,13 @@ uv run ty check
 uv run pytest tests/ -q
 uv build
 ```
+
+## Resources
+
+- [Documentation](https://www.ml4trading.io/docs/specs/)
+- [Issue tracker](https://github.com/ml4t/specs/issues)
+- [Release notes](https://github.com/ml4t/specs/releases)
+- [License](LICENSE)
 
 ## License
 

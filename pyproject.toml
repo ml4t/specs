@@ -97,6 +97,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -128,4 +129,4 @@ ignore = [
 
 [tool.ty.environment]
 python-version = "3.12"
-root = ["src"]
+root = ["src", "."]

@@ -6,6 +6,7 @@ repo_name: ml4t/specs
 
 theme:
   name: material
+  custom_dir: overrides
   font: false
   features:
     - navigation.indexes
@@ -32,6 +33,12 @@ plugins:
             show_root_heading: true
             show_root_full_path: false
             members_order: source
+
+extra:
+  release:
+    library: specs
+    version: !ENV [ML4T_DOCS_VERSION, dev]
+    commit: !ENV [ML4T_DOCS_COMMIT, 0000000000000000000000000000000000000000]
 
 nav:
   - Home: index.md

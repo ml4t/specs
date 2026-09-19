@@ -1,55 +1,316 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable package version without the v prefix
+        required: true
+        type: string
+      candidate-sha:
+        description: Exact current main commit to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
 
 jobs:
-  ecosystem-qualification:
-    name: Ecosystem Qualification
+  preflight:
+    name: Validate unpublished main candidate
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    uses: ml4t/ecosystem/.github/workflows/qualify-library.yml@457678d8860d0c816b1dc376e7e2691daa93af4d # v0.1.0
+    outputs:
+      commit: ${{ steps.identity.outputs.commit }}
+      tree: ${{ steps.identity.outputs.tree }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.candidate-sha }}
+      - run: git fetch --no-tags origin main
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.10.9"
+      - name: Check main identity and public version absence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project --with packaging
+          python scripts/check_release_preflight.py
+          --version "${{ inputs.version }}"
+          --candidate-sha "${{ inputs.candidate-sha }}"
+          --workflow-sha "${{ github.sha }}"
+          --repository "${{ github.repository }}"
+      - name: Record accepted candidate
+        id: identity
+        run: |
+          {
+            echo "commit=${{ inputs.candidate-sha }}"
+            echo "tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "version=${{ inputs.version }}"
+          } >> "$GITHUB_OUTPUT"
+
+  ecosystem-qualification:
+    name: Ecosystem Qualification
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ml4t/ecosystem/.github/workflows/qualify-library.yml@da2cbb9a9d0b4d2f166ad630470ff7d7a1aa2643 # 2026-09-19 policy snapshot
     with:
       import-package: ml4t.specs
 
   qualification:
-    name: Qualify Release
+    name: Release Qualification
+    needs: preflight
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
 
-  publish:
-    name: Publish to PyPI
+  build:
+    name: Build package and documentation once
     runs-on: ubuntu-latest
-    needs: [ecosystem-qualification, qualification]
+    needs: [preflight, ecosystem-qualification, qualification]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.commit }}
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.10.9"
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync --locked --dev --extra docs
+      - name: Build distributions once
+        run: uv build --out-dir candidate/dist
+      - name: Validate and bind the release candidate
+        run: |
+          uv run twine check candidate/dist/*
+          uv run python scripts/release_candidate.py create candidate \
+            --commit-sha "${{ needs.preflight.outputs.commit }}" \
+            --git-tree "${{ needs.preflight.outputs.tree }}"
+          uv run python scripts/release_candidate.py verify candidate \
+            --expected-commit "${{ needs.preflight.outputs.commit }}" \
+            --expected-tree "${{ needs.preflight.outputs.tree }}" \
+            --expected-tag "v${{ needs.preflight.outputs.version }}"
+      - name: Install and exercise the candidate wheel
+        shell: bash
+        run: |
+          wheel=$(find candidate/dist -name '*.whl' -print -quit)
+          uv run --isolated --no-project --with "$wheel" python -I \
+            scripts/run_readme_quickstart.py
+      - name: Build and verify revision-identified documentation
+        env:
+          ML4T_DOCS_VERSION: ${{ needs.preflight.outputs.version }}
+          ML4T_DOCS_COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: |
+          uv run mkdocs build --strict --site-dir candidate/site
+          uv run python scripts/verify_documentation_identity.py \
+            --site candidate/site \
+            --expected-library specs \
+            --expected-version "$ML4T_DOCS_VERSION" \
+            --expected-commit "$ML4T_DOCS_COMMIT"
+      - name: Upload immutable release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-${{ needs.preflight.outputs.commit }}
+          path: |
+            candidate/dist/
+            candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload immutable documentation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-${{ needs.preflight.outputs.commit }}
+          path: candidate/site/
+          if-no-files-found: error
+          retention-days: 90
+
+  documentation:
+    name: Deploy and verify qualified documentation
+    runs-on: ubuntu-latest
+    needs: [preflight, build]
+    environment: documentation
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: docs-${{ needs.preflight.outputs.commit }}
+          path: candidate-site/
+      - name: Verify documentation before deployment
+        run: >-
+          python scripts/verify_documentation_identity.py
+          --site candidate-site
+          --expected-library specs
+          --expected-version "${{ needs.preflight.outputs.version }}"
+          --expected-commit "${{ needs.preflight.outputs.commit }}"
+      - name: Require the documentation deploy credential
+        env:
+          DOCS_DEPLOY_KEY: ${{ secrets.DOCS_DEPLOY_KEY }}
+        run: test -n "$DOCS_DEPLOY_KEY"
+      - name: Deploy the qualified documentation artifact
+        uses: cpina/github-action-push-to-another-repository@55306faa4ed53b815ae49e564af8cfb359d32ae2 # v1.7.3
+        env:
+          SSH_DEPLOY_KEY: ${{ secrets.DOCS_DEPLOY_KEY }}
+        with:
+          source-directory: candidate-site/
+          destination-github-username: ml4t
+          destination-repository-name: website
+          target-directory: static/docs/specs/
+          target-branch: main
+          commit-message: "docs(specs): release ${{ needs.preflight.outputs.version }} from ${{ needs.preflight.outputs.commit }}"
+          user-name: ml4t-bot
+          user-email: bot@ml4trading.io
+      - name: Verify deployed documentation identity
+        run: >-
+          python scripts/verify_documentation_identity.py
+          --url https://www.ml4trading.io/docs/specs/
+          --url https://www.ml4trading.io/docs/specs/getting-started/
+          --url https://www.ml4trading.io/docs/specs/api/
+          --expected-library specs
+          --expected-version "${{ needs.preflight.outputs.version }}"
+          --expected-commit "${{ needs.preflight.outputs.commit }}"
+          --attempts 24
+          --delay 10
+
+  publish:
+    name: Publish exact candidate to PyPI
+    runs-on: ubuntu-latest
+    needs: [preflight, documentation]
     environment: pypi
     permissions:
+      actions: read
+      contents: read
       id-token: write
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-${{ needs.preflight.outputs.commit }}
+          path: candidate/
+      - name: Verify retained candidate
+        run: >-
+          python scripts/release_candidate.py verify candidate
+          --expected-commit "${{ needs.preflight.outputs.commit }}"
+          --expected-tree "${{ needs.preflight.outputs.tree }}"
+          --expected-tag "v${{ needs.preflight.outputs.version }}"
+      - name: Publish through trusted publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: candidate/dist/
+          verify-metadata: true
+          print-hash: true
+          attestations: true
 
   github-release:
-    name: Create GitHub Release
+    name: Create tag and GitHub release
     runs-on: ubuntu-latest
-    needs: publish
+    needs: [preflight, publish]
     permissions:
+      actions: read
       contents: write
     steps:
-      - name: Create GitHub Release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-${{ needs.preflight.outputs.commit }}
+          path: candidate/
+      - name: Create release from the published candidate
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh release create "v${{ needs.preflight.outputs.version }}"
+          candidate/dist/* candidate/candidate.json
+          --generate-notes
+          --repo "${{ github.repository }}"
+          --target "${{ needs.preflight.outputs.commit }}"
+
+  post-publication:
+    name: Verify package, release, and documentation
+    runs-on: ubuntu-latest
+    needs: [preflight, github-release]
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.commit }}
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.10.9"
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-${{ needs.preflight.outputs.commit }}
+          path: candidate/
+      - name: Verify PyPI metadata and GitHub release digests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project
+          python scripts/verify_published_release.py
+          --manifest candidate/candidate.json
+          --repository "${{ github.repository }}"
+      - name: Install and exercise the published wheel
+        shell: bash
         run: |
-          flags=(--generate-notes --verify-tag)
-          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(a|b|rc)[0-9]+$ ]]; then
-            flags+=(--prerelease)
-          fi
-          gh release create "${GITHUB_REF_NAME}" "${flags[@]}"
+          uv venv --clear --python "${{ env.PYTHON_VERSION }}" "${RUNNER_TEMP}/published-venv"
+          uv pip install \
+            --python "${RUNNER_TEMP}/published-venv/bin/python" \
+            --no-cache \
+            --index-url https://pypi.org/simple \
+            "ml4t-specs==${{ needs.preflight.outputs.version }}"
+          "${RUNNER_TEMP}/published-venv/bin/python" -I scripts/run_readme_quickstart.py
+      - name: Verify deployed documentation again
+        run: >-
+          python scripts/verify_documentation_identity.py
+          --url https://www.ml4trading.io/docs/specs/
+          --url https://www.ml4trading.io/docs/specs/api/
+          --expected-library specs
+          --expected-version "${{ needs.preflight.outputs.version }}"
+          --expected-commit "${{ needs.preflight.outputs.commit }}"
+          --attempts 6
+          --delay 10
+
+  recovery:
+    name: Record a post-publication recovery issue
+    runs-on: ubuntu-latest
+    needs: [preflight, publish, github-release, post-publication]
+    if: >-
+      ${{ always() && needs.publish.result == 'success' &&
+      (needs.github-release.result != 'success' || needs.post-publication.result != 'success') }}
+    permissions:
+      issues: write
+    steps:
+      - name: Record the failed release stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh issue create
+          --repo "${{ github.repository }}"
+          --title "Recover release v${{ needs.preflight.outputs.version }}"
+          --body "Publication of v${{ needs.preflight.outputs.version }} from ${{ needs.preflight.outputs.commit }} crossed the PyPI boundary, but GitHub release or post-publication verification failed. Inspect workflow run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Do not reuse this version for different artifacts."
