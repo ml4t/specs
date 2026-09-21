@@ -35,6 +35,12 @@ validation behavior, and serialized representations are public compatibility sur
 - Preserve compatible payloads. When compatibility cannot be maintained, add a new contract version,
   migration guidance, and fixtures that define the transition.
 
+## Guide maintenance
+
+Update this guide when a public contract family, authoritative documentation path, quality command,
+or cross-library ownership boundary changes. Do not add current issue state, local workspace paths,
+or implementation inventories that become stale as files move.
+
 ## Quality commands
 
 ```bash
