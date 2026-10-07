@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 import os
 import stat
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 import ml4t.specs.io as spec_io
 from ml4t.specs import (
     ArtifactStorage,
+    CanonicalTargetIntent,
     MarketDataSemantics,
     MarketDataSpec,
     TimestampSemantics,
@@ -101,6 +104,65 @@ def test_read_spec_payload_rejects_non_mapping_documents(
 
     with pytest.raises(ValueError, match="mapping"):
         read_spec_payload(path)
+
+
+def test_read_spec_payload_keeps_json_compatible_yaml_scalars(tmp_path) -> None:
+    intent_path = tmp_path / "intent.yaml"
+    intent_path.write_text(
+        """\
+intent_id: target-1
+decision_time: 2026-08-08T13:00:00+00:00
+information_cutoff: 2026-08-08T12:59:59+00:00
+effective_session: 2026-08-10
+effective_phase: pre_open
+targets:
+- asset: NO
+  measure: weight
+  value: 0.5
+idempotency_key: target-key
+measure: weight
+cash_buffer: 0.05
+rounding: toward_zero
+residual: keep_cash
+reason: rebalance
+lifecycle_version: '1'
+""",
+        encoding="utf-8",
+    )
+    payload = read_spec_payload(intent_path)
+    assert isinstance(payload["decision_time"], str)
+    assert payload["effective_session"] == "2026-08-10"
+    assert payload["targets"][0]["asset"] == "NO"
+    intent = CanonicalTargetIntent.from_mapping(payload)
+    assert intent.decision_time == datetime(2026, 8, 8, 13, 0, tzinfo=UTC)
+    assert intent.information_cutoff == datetime(2026, 8, 8, 12, 59, 59, tzinfo=UTC)
+    assert intent.effective_session == date(2026, 8, 10)
+    assert intent.targets[0].asset == "NO"
+
+    market_path = tmp_path / "market.yaml"
+    market_path.write_text(
+        """\
+artifact_id: prices
+provenance:
+  created_by: no
+semantics:
+  calendar: NYSE
+""",
+        encoding="utf-8",
+    )
+    market = read_spec_payload(market_path)
+    assert market["provenance"]["created_by"] == "no"
+    assert MarketDataSpec.from_mapping(market).provenance.created_by == "no"
+
+    flags = tmp_path / "flags.yaml"
+    flags.write_text("enabled: false\nabsent: null\ncount: 2\ntoken: yes\n", encoding="utf-8")
+    assert read_spec_payload(flags) == {
+        "enabled": False,
+        "absent": None,
+        "count": 2,
+        "token": "yes",
+    }
+    assert yaml.safe_load("asset: NO\n") == {"asset": False}
 
 
 def test_read_spec_payload_normalizes_mapping_keys(tmp_path) -> None:

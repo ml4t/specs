@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 from collections.abc import Mapping
 from pathlib import Path
@@ -15,6 +16,39 @@ import yaml
 from .base import ArtifactSpec
 
 _SUPPORTED_SUFFIXES = frozenset({".json", ".yaml", ".yml"})
+_YAML_BOOL_TAG = "tag:yaml.org,2002:bool"
+_YAML_TIMESTAMP_TAG = "tag:yaml.org,2002:timestamp"
+
+
+class _SpecYamlLoader(yaml.SafeLoader):
+    """Load YAML spec payloads as JSON-compatible scalars.
+
+    PyYAML defaults to YAML 1.1. Unquoted ISO dates become ``datetime`` objects,
+    which then crash ``fromisoformat``, and ``yes``/``no``/``on``/``off`` become
+    booleans, so an asset id such as ``NO`` never arrives as the string the
+    contract validates.
+    """
+
+
+def _json_compatible_yaml_resolvers() -> dict[str | None, list[tuple[str, re.Pattern[str]]]]:
+    resolvers: dict[str | None, list[tuple[str, re.Pattern[str]]]] = {}
+    for key, entries in yaml.SafeLoader.yaml_implicit_resolvers.items():
+        kept = [
+            (tag, regexp)
+            for tag, regexp in entries
+            if tag not in {_YAML_BOOL_TAG, _YAML_TIMESTAMP_TAG}
+        ]
+        if kept:
+            resolvers[key] = kept
+    return resolvers
+
+
+_SpecYamlLoader.yaml_implicit_resolvers = _json_compatible_yaml_resolvers()
+_SpecYamlLoader.add_implicit_resolver(
+    _YAML_BOOL_TAG,
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
 
 
 def _validated_suffix(path: Path) -> str:
@@ -79,7 +113,7 @@ def read_spec_payload(path_or_mapping: str | Path | Mapping[Any, Any]) -> dict[s
     path = Path(path_or_mapping)
     suffix = _validated_suffix(path)
     with path.open(encoding="utf-8") as f:
-        data = json.load(f) if suffix == ".json" else yaml.safe_load(f)
+        data = json.load(f) if suffix == ".json" else yaml.load(f, Loader=_SpecYamlLoader)
     return _normalize_mapping({} if data is None else data)
 
 
