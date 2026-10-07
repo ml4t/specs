@@ -44,7 +44,7 @@ VERSION = "1.2.3"
 REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
-@pytest.mark.parametrize("version", ["1.2", "v1.2.3", "1.2.3rc1", "1.2.3+local"])
+@pytest.mark.parametrize("version", ["1.2", "v1.2.3", "1.2.3rc1", "1.2.3+local", "1!1.2.3"])
 def test_release_preflight_rejects_nonstable_versions(version: str) -> None:
     assert version_failure(version) is not None
 

@@ -70,6 +70,7 @@ def version_failure(value: str) -> str | None:
         return "release version is not PEP 440 compliant"
     if (
         str(version) != value
+        or version.epoch != 0
         or len(version.release) != 3
         or version.is_prerelease
         or version.is_devrelease
