@@ -3,11 +3,28 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from .base import ArtifactKind, ArtifactProvenance, ArtifactSpec, ArtifactStorage, optional_str
+from .base import (
+    ArtifactKind,
+    ArtifactProvenance,
+    ArtifactSpec,
+    ArtifactStorage,
+    optional_str,
+    serialize_artifact_value,
+)
+from .time import (
+    UNSET_CALENDAR,
+    BarGridAnchor,
+    BarLabel,
+    CalendarUnset,
+    PartialBarPolicy,
+    _normalize_time_contract,
+    _resolve_calendar,
+    _serialize_time_contract,
+)
 
 
 class TimestampSemantics(StrEnum):
@@ -44,6 +61,10 @@ class FeedSpec:
         "bar_type": ("bar_type",),
         "timestamp_semantics": ("timestamp_semantics",),
         "session_start_time": ("session_start_time",),
+        "time_contract_version": ("time_contract_version",),
+        "bar_grid_anchor": ("bar_grid_anchor",),
+        "bar_label": ("bar_label",),
+        "partial_bar_policy": ("partial_bar_policy",),
     }
     _SEMANTICS_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
@@ -53,6 +74,10 @@ class FeedSpec:
             "bar_type",
             "timestamp_semantics",
             "session_start_time",
+            "time_contract_version",
+            "bar_grid_anchor",
+            "bar_label",
+            "partial_bar_policy",
         }
     )
 
@@ -74,19 +99,32 @@ class FeedSpec:
     mid_col: str | None = None
     bid_size_col: str | None = None
     ask_size_col: str | None = None
-    calendar: str | None = None
+    calendar: str | None | CalendarUnset = UNSET_CALENDAR
     timezone: str | None = None
     data_frequency: Any | None = None
     bar_type: str | None = None
     timestamp_semantics: TimestampSemantics | str | None = None
     session_start_time: str | None = None
+    time_contract_version: int = field(default=1, kw_only=True)
+    bar_grid_anchor: BarGridAnchor | str | None = field(default=None, kw_only=True)
+    bar_label: BarLabel | str | None = field(default=None, kw_only=True)
+    partial_bar_policy: PartialBarPolicy | str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         semantics = self.timestamp_semantics
-        if semantics is None:
-            return
-        if not isinstance(semantics, TimestampSemantics):
+        if semantics is not None and not isinstance(semantics, TimestampSemantics):
             object.__setattr__(self, "timestamp_semantics", TimestampSemantics(str(semantics)))
+        _normalize_time_contract(self)
+
+    def resolve_calendar(
+        self, *, calendar: str | None | CalendarUnset = UNSET_CALENDAR
+    ) -> str | None:
+        """Resolve explicit selection, declared metadata, then NYSE, preserving None."""
+        return _resolve_calendar(self.calendar, self.time_contract_version, calendar)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize temporal declaration presence without leaking the unset marker."""
+        return serialize_artifact_value(_serialize_time_contract(asdict(self)))
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> FeedSpec:
@@ -144,8 +182,15 @@ class FeedSpec:
         return cls.from_object(value)
 
     def with_overrides(self, **overrides: Any) -> FeedSpec:
-        """Return a new spec with explicit non-null overrides applied."""
-        updates = {key: value for key, value in overrides.items() if value is not None}
+        """Apply overrides; version 2 also accepts explicit calendar=None to disable it."""
+        version = overrides.get("time_contract_version")
+        if version is None:
+            version = self.time_contract_version
+        updates = {
+            key: value
+            for key, value in overrides.items()
+            if value is not None or (key == "calendar" and version == 2)
+        }
         return replace(self, **updates) if updates else self
 
     def resolve(self, columns: Sequence[str], entity_candidates: Sequence[str]) -> FeedSpec:
@@ -309,17 +354,31 @@ class MarketDataSemantics:
     """Temporal and execution semantics for tradable market data."""
 
     data_frequency: str | None = None
-    calendar: str | None = None
+    calendar: str | None | CalendarUnset = UNSET_CALENDAR
     timezone: str | None = None
     timestamp_semantics: TimestampSemantics | str | None = None
     session_start_time: str | None = None
     bar_type: str | None = None
+    time_contract_version: int = field(default=1, kw_only=True)
+    bar_grid_anchor: BarGridAnchor | str | None = field(default=None, kw_only=True)
+    bar_label: BarLabel | str | None = field(default=None, kw_only=True)
+    partial_bar_policy: PartialBarPolicy | str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         semantics = self.timestamp_semantics
-        if semantics is None or isinstance(semantics, TimestampSemantics):
-            return
-        object.__setattr__(self, "timestamp_semantics", TimestampSemantics(str(semantics)))
+        if semantics is not None and not isinstance(semantics, TimestampSemantics):
+            object.__setattr__(self, "timestamp_semantics", TimestampSemantics(str(semantics)))
+        _normalize_time_contract(self)
+
+    def resolve_calendar(
+        self, *, calendar: str | None | CalendarUnset = UNSET_CALENDAR
+    ) -> str | None:
+        """Resolve explicit selection, declared metadata, then NYSE, preserving None."""
+        return _resolve_calendar(self.calendar, self.time_contract_version, calendar)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize temporal declaration presence without leaking the unset marker."""
+        return serialize_artifact_value(_serialize_time_contract(asdict(self)))
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any] | None) -> MarketDataSemantics:
@@ -329,11 +388,19 @@ class MarketDataSemantics:
             raise TypeError("semantics must be a mapping or None")
         return cls(
             data_frequency=optional_str(mapping.get("data_frequency")),
-            calendar=optional_str(mapping.get("calendar")),
+            calendar=(
+                mapping.get("calendar", UNSET_CALENDAR)
+                if mapping.get("time_contract_version", 1) != 1
+                else optional_str(mapping.get("calendar"))
+            ),
             timezone=optional_str(mapping.get("timezone")),
             timestamp_semantics=mapping.get("timestamp_semantics"),
             session_start_time=optional_str(mapping.get("session_start_time")),
             bar_type=optional_str(mapping.get("bar_type")),
+            time_contract_version=mapping.get("time_contract_version", 1),
+            bar_grid_anchor=mapping.get("bar_grid_anchor"),
+            bar_label=mapping.get("bar_label"),
+            partial_bar_policy=mapping.get("partial_bar_policy"),
         )
 
 
@@ -344,6 +411,12 @@ class MarketDataSpec(ArtifactSpec):
     kind: ArtifactKind = field(default=ArtifactKind.MARKET_DATA, init=False)
     schema: MarketDataSchema = field(default_factory=MarketDataSchema)
     semantics: MarketDataSemantics = field(default_factory=MarketDataSemantics)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the artifact with its temporal contract's omission semantics."""
+        payload = ArtifactSpec.to_dict(self)
+        payload["semantics"] = self.semantics.to_dict()
+        return payload
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> MarketDataSpec:

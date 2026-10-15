@@ -77,7 +77,9 @@ def test_grid_declarations_survive_real_serialized_feed_handoff(tmp_path):
         "bar_label": "right",
         "partial_bar_policy": "include",
     }
-    artifact = MarketDataSpec(artifact_id="hourly", semantics=MarketDataSemantics(**declaration))
+    artifact = MarketDataSpec(
+        artifact_id="hourly", semantics=MarketDataSemantics.from_mapping(declaration)
+    )
     path = tmp_path / "hourly.json"
     write_spec_payload(artifact, path)
     feed = FeedSpec.from_mapping(read_spec_payload(path))
@@ -141,3 +143,77 @@ def test_window_units_do_not_alias_rows_sessions_and_elapsed_time():
     }
     with pytest.raises(ValueError):
         WindowUnit("day")
+
+
+@pytest.mark.parametrize("contract_type", [FeedSpec, MarketDataSemantics])
+def test_grid_declaration_requires_versioned_opt_in(contract_type):
+    with pytest.raises(ValueError, match="time_contract_version=2"):
+        contract_type(bar_label="right")
+
+
+@pytest.mark.parametrize("calendar, expected", [(None, None), ("24/7", "24/7")])
+def test_semantics_calendar_resolution_matches_serialized_feed(calendar, expected):
+    semantics = MarketDataSemantics(time_contract_version=2, calendar=calendar)
+    assert semantics.resolve_calendar() == expected
+    feed = MarketDataSpec(artifact_id="bars", semantics=semantics).to_feed_spec()
+    assert feed.resolve_calendar() == semantics.resolve_calendar()
+    assert semantics.resolve_calendar(calendar="NYSE") == "NYSE"
+    with pytest.raises(ValueError, match="calendar"):
+        semantics.resolve_calendar(calendar="")
+
+
+def test_ignored_version_override_does_not_discard_calendar_disable():
+    feed = FeedSpec(time_contract_version=2, calendar="NYSE")
+    assert feed.with_overrides(time_contract_version=None, calendar=None).resolve_calendar() is None
+
+
+def test_reset_to_inherited_calendar_survives_serialization():
+    from ml4t.specs import UNSET_CALENDAR
+
+    disabled = FeedSpec(time_contract_version=2, calendar=None)
+    inherited = disabled.with_overrides(calendar=UNSET_CALENDAR)
+    assert "calendar" not in inherited.to_dict()
+    assert FeedSpec.from_mapping(inherited.to_dict()).resolve_calendar() == "NYSE"
+
+
+def test_invalid_grid_does_not_replace_an_existing_persisted_contract(tmp_path):
+    path = tmp_path / "bars.json"
+    write_spec_payload(MarketDataSpec(artifact_id="existing"), path)
+    before = path.read_bytes()
+    payload = {
+        "artifact_id": "new",
+        "semantics": {
+            "time_contract_version": 2,
+            "timestamp_semantics": "bar_close",
+            "bar_label": "left",
+        },
+    }
+    with pytest.raises(ValueError, match="bar_close"):
+        write_spec_payload(MarketDataSpec.from_mapping(payload), path)
+    assert path.read_bytes() == before
+
+
+def test_left_labeled_complete_bar_policy_is_preserved(tmp_path):
+    spec = FeedSpec(
+        time_contract_version=2,
+        calendar="24/7",
+        data_frequency="1h",
+        bar_grid_anchor="session_open",
+        bar_label="left",
+        partial_bar_policy="exclude",
+    )
+    path = tmp_path / "feed.yaml"
+    write_spec_payload(spec.to_dict(), path)
+    restored = FeedSpec.from_mapping(read_spec_payload(path))
+    assert restored.bar_label == "left"
+    assert restored.partial_bar_policy == "exclude"
+    assert restored.bar_grid_anchor == "session_open"
+
+
+def test_version_override_migrates_legacy_declaration_without_losing_explicit_null():
+    legacy = FeedSpec(calendar="NYSE")
+    migrated = legacy.with_overrides(time_contract_version=2, calendar=None)
+    assert migrated.time_contract_version == 2
+    assert migrated.resolve_calendar() is None
+    assert FeedSpec.from_mapping(migrated.to_dict()).resolve_calendar() is None
+    assert legacy.resolve_calendar() == "NYSE"
