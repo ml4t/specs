@@ -183,6 +183,9 @@ This package is intentionally small. It is a support layer, not a full end-user 
 
 ## Development
 
+Read the [contribution guide](CONTRIBUTING.md) for issue scope, verification evidence, and contract
+compatibility requirements.
+
 ```bash
 git clone https://github.com/ml4t/specs.git
 cd ml4t-specs
