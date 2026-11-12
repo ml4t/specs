@@ -95,3 +95,12 @@ so simulation and live runtimes can resume consistently.
 
 Backtest and live must validate these objects against the same contract rather than relying on
 undocumented engine-specific interpretations.
+
+## Observed executions
+
+`ExecutionFill` records an incremental fill with the runtime order ID, asset,
+side, quantity, and price. A provider can also supply its own order and
+execution IDs. Deduplicate by execution identity within the run and venue.
+Keep venue execution time and local receipt time separate. Fees, fee currency,
+quote currency, and contract multiplier remain absent when the producer cannot
+establish them. A cumulative order status is a reconciliation record.

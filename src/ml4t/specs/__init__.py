@@ -8,6 +8,7 @@ from .base import (
     optional_str,
     serialize_artifact_value,
 )
+from .execution_trace import ExecutionFill
 from .intents import (
     AssetTarget,
     BarPathPolicy,
@@ -112,6 +113,7 @@ __all__ = [
     "EventCompletion",
     "ExecutionBehavior",
     "ExecutionCapability",
+    "ExecutionFill",
     "ExecutionPolicy",
     "ExitReason",
     "FeedSpec",
